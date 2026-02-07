@@ -1,0 +1,16 @@
+{
+  "_comment": "Minimal configuration - only PreToolUse for quick testing. Port 23518 is default.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23518/hook?event=PreToolUse'"
+          }
+        ]
+      }
+    ]
+  }
+}

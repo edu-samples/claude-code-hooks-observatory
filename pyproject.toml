@@ -1,0 +1,14 @@
+[project]
+name = "claude-code-hooks-observatory"
+version = "0.1.0"
+description = "Educational REST server for observing Claude Code hook events"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
