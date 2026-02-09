@@ -95,6 +95,8 @@ struct YamlHighlighter {
 
 The `highlight()` method produces ANSI escape codes for terminal coloring. When stdout isn't a TTY (piped), we output plain YAML without colors.
 
+**256-color vs 24-bit color**: syntect's built-in `as_24_bit_terminal_escaped()` emits exact RGB values (`\x1b[38;2;R;G;Bm`). These bypass terminal color schemes entirely -- your KDE Konsole or iTerm2 dark/light theme has no effect. Instead, we use `ansi_colours::ansi256_from_rgb()` to approximate RGB→256-color palette (`\x1b[38;5;Nm`). Indexed colors can be remapped by the terminal, matching how Python's pygments `Terminal256Formatter` works. This is the same technique used by `bat` (the popular `cat` replacement).
+
 ### Drop Guard for Cleanup
 
 Python uses `try`/`finally` or `atexit`. Rust uses the `Drop` trait:
@@ -143,6 +145,7 @@ The listener is non-blocking so we can check the shutdown flag between accepts. 
 | `serde_yaml` | YAML serialization | `pyyaml` |
 | `chrono` | Timestamps | `datetime` stdlib |
 | `syntect` | Syntax highlighting | `pygments` |
+| `ansi_colours` | RGB → 256-color approximation | (built into pygments `Terminal256Formatter`) |
 | `libc` | Raw C function bindings | `socket`/`struct` stdlib |
 
 Note: `serde_yaml` 0.9 is archived (the author deprecated it). For production use, consider `serde_yml` or manual YAML formatting. For this educational project, 0.9 works fine and the API is well-documented.

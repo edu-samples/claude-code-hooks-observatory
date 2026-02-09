@@ -29,7 +29,8 @@ use serde_json::Value;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::highlighting::Style;
+use syntect::util::LinesWithEndings;
 
 // === CLI DEFINITIONS ===
 
@@ -126,8 +127,14 @@ impl YamlHighlighter {
         }
     }
 
-    /// Highlight YAML text for terminal output using syntect.
-    /// Equivalent to Python's: highlight(yaml_text, YamlLexer(), Terminal256Formatter())
+    /// Highlight YAML text for terminal output using syntect + 256-color codes.
+    ///
+    /// Uses indexed 256-color ANSI codes (\x1b[38;5;Nm) instead of 24-bit RGB
+    /// (\x1b[38;2;R;G;Bm). This matches Python's pygments Terminal256Formatter
+    /// behavior: indexed colors can be remapped by terminal color schemes (KDE
+    /// Konsole, iTerm2, etc.), so the output adapts to the user's dark/light theme.
+    ///
+    /// The `ansi_colours` crate approximates RGB → nearest 256-color palette entry.
     fn highlight(&self, yaml_text: &str) -> String {
         let syntax = self
             .syntax_set
@@ -138,13 +145,32 @@ impl YamlHighlighter {
         let mut output = String::new();
         for line in LinesWithEndings::from(yaml_text) {
             let ranges = h.highlight_line(line, &self.syntax_set).unwrap();
-            let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+            let escaped = as_256_color_terminal_escaped(&ranges);
             output.push_str(&escaped);
         }
         // Reset terminal colors at the end
         output.push_str("\x1b[0m");
         output
     }
+}
+
+/// Convert syntect highlight ranges to 256-color ANSI escape sequences.
+///
+/// This is the 256-color equivalent of syntect's `as_24_bit_terminal_escaped()`.
+/// Instead of emitting exact RGB values (\x1b[38;2;R;G;Bm) which terminals display
+/// literally, we emit indexed color codes (\x1b[38;5;Nm) that terminals can remap
+/// based on the user's color scheme.
+///
+/// The approximation uses `ansi_colours::ansi256_from_rgb()` which maps RGB to the
+/// nearest entry in the standard 256-color palette (6×6×6 color cube + grayscale ramp).
+fn as_256_color_terminal_escaped(ranges: &[(Style, &str)]) -> String {
+    let mut output = String::new();
+    for &(style, text) in ranges {
+        let fg = style.foreground;
+        let idx = ansi_colours::ansi256_from_rgb((fg.r, fg.g, fg.b));
+        output.push_str(&format!("\x1b[38;5;{}m{}", idx, text));
+    }
+    output
 }
 
 /// Format a single event in the configured output format.
