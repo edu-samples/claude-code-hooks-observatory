@@ -83,7 +83,9 @@ def get_peer_creds(sock: socket.socket) -> tuple[int, int, int] | None:
         SO_PEERCRED = 17  # Linux constant
         cred = sock.getsockopt(socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize("3i"))
         pid, uid, gid = struct.unpack("3i", cred)
-        return (pid, uid, gid)
+        # pid=0 means the socket isn't connected or isn't AF_UNIX
+        if pid > 0:
+            return (pid, uid, gid)
     except (OSError, struct.error):
         pass
 
