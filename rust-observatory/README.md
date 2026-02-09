@@ -8,7 +8,7 @@ A single Rust binary that supports **both TCP and Unix socket** transports for o
 # Build
 cargo build --release
 
-# TCP mode (port 23519)
+# TCP mode (port 23518)
 ./target/release/rust-observatory tcp
 
 # Unix socket mode
@@ -33,12 +33,12 @@ cp configs/hooks-unix.json ~/.claude/settings.json
 ### TCP (like tcp-observatory)
 
 ```bash
-./target/release/rust-observatory tcp                    # Default: 127.0.0.1:23519
+./target/release/rust-observatory tcp                    # Default: 127.0.0.1:23518
 ./target/release/rust-observatory tcp --port 9999        # Custom port
 ./target/release/rust-observatory tcp --bind 0.0.0.0     # All interfaces (dev only)
 ```
 
-Port precedence: `--port` > `$CLAUDE_RUST_HOOK_WATCHER` > `23519`
+Port precedence: `--port` > `$CLAUDE_REST_HOOK_WATCHER` > `23518`
 
 ### Unix Socket (like unix-socket-observatory)
 
@@ -92,7 +92,7 @@ cargo test -- -v     # Verbose output
 | HTTP layer | `http.server` stdlib | HTTPServer or raw selectors | Raw `std` sockets |
 | YAML highlighting | `pygments` | `pygments` | `syntect` |
 | Peer credentials | N/A | `SO_PEERCRED` (Python) | `SO_PEERCRED` (libc FFI) |
-| Default port | 23518 | N/A | 23519 |
+| Default port | 23518 | N/A | 23518 |
 | Default socket | N/A | `/tmp/claude-observatory.sock` | `/tmp/claude-observatory-rust.sock` |
 | Dependencies | stdlib only | stdlib only | clap, serde, syntect, chrono, libc |
 | Install | `uv run --script` | `uv run --script` | `cargo build --release` |

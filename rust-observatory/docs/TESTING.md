@@ -116,10 +116,10 @@ cargo build --release
 # Send test event (in another terminal)
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
-  'http://127.0.0.1:23519/hook?event=PreToolUse'
+  'http://127.0.0.1:23518/hook?event=PreToolUse'
 
 # Health check
-curl -s 'http://127.0.0.1:23519/health'
+curl -s 'http://127.0.0.1:23518/health'
 ```
 
 ### Unix socket mode

@@ -9,7 +9,7 @@
 //!     and ownership patterns for socket lifecycle management.
 //!
 //! Usage:
-//!     rust-observatory tcp                              # TCP on 127.0.0.1:23519
+//!     rust-observatory tcp                              # TCP on 127.0.0.1:23518
 //!     rust-observatory tcp --port 9999                  # Custom port
 //!     rust-observatory tcp --pretty-yaml                # Colored YAML output
 //!     rust-observatory unix                             # Unix socket (default path)
@@ -95,10 +95,10 @@ enum TransportMode {
 
 // === CONSTANTS ===
 
-const DEFAULT_TCP_PORT: u16 = 23519; // One above Python's 23518 to avoid collisions
+const DEFAULT_TCP_PORT: u16 = 23518; // Same as Python tcp-observatory
 const DEFAULT_BIND: &str = "127.0.0.1";
 const DEFAULT_SOCKET: &str = "/tmp/claude-observatory-rust.sock";
-const ENV_TCP_PORT: &str = "CLAUDE_RUST_HOOK_WATCHER";
+const ENV_TCP_PORT: &str = "CLAUDE_REST_HOOK_WATCHER";
 const ENV_UNIX_SOCKET: &str = "CLAUDE_RUST_UNIX_HOOK_WATCHER";
 
 // === OUTPUT FORMATTING ===

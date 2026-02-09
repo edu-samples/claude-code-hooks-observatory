@@ -1,5 +1,5 @@
 {
-  "_comment": "Minimal configuration - only PreToolUse for quick testing. Port 23519 (Rust TCP) or unix socket.",
+  "_comment": "Minimal configuration - only PreToolUse for quick testing. Port 23518 (Rust TCP) or unix socket.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 0.5 --max-time 1 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PreToolUse' || true"
+            "command": "curl -s --connect-timeout 0.5 --max-time 1 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23518/hook?event=PreToolUse' || true"
           }
         ]
       }

@@ -26,7 +26,7 @@ The repository had two Python observatory variants (TCP and Unix socket). This a
 | SO_PEERCRED | Raw `libc` FFI with `#[cfg]` | Shows unsafe boundary, platform-specific |
 | CLI | `clap` derive API with subcommands | Clean, declarative, standard |
 | YAML serialization | `serde_yaml` 0.9 | Well-known API (noted as archived in EDU_NOTES) |
-| Default TCP port | 23519 | Avoids collision with Python's 23518 |
+| Default TCP port | 23518 | Same as Python tcp-observatory |
 | Default socket path | `/tmp/claude-observatory-rust.sock` | Avoids collision with Python |
 | Socket cleanup | `Drop` trait guard | More reliable than try/finally |
 | Signal handling | Raw `libc::signal` | Educational, no ctrlc crate dependency |
@@ -43,7 +43,7 @@ rust-observatory/
 ├── README.md                    # Quick start, comparison table
 ├── server.EDU_NOTES.md          # Rust-specific concepts
 ├── configs/
-│   ├── hooks-tcp.json           # TCP config (port 23519)
+│   ├── hooks-tcp.json           # TCP config (port 23518)
 │   ├── hooks-unix.json          # Unix socket config
 │   └── hooks-minimal.json       # Just PreToolUse
 └── docs/
