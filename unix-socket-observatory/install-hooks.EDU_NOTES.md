@@ -5,7 +5,7 @@ How the Unix socket hook installer works and what each curl flag does.
 ## The curl Command
 
 ```bash
-curl -s --connect-timeout 1 --max-time 2 \
+curl -s --connect-timeout 0.5 --max-time 1 \
   --unix-socket /tmp/claude-observatory.sock \
   -X POST -H 'Content-Type: application/json' -d @- \
   'http://localhost/hook?event=PreToolUse' || true
@@ -16,8 +16,8 @@ curl -s --connect-timeout 1 --max-time 2 \
 | Flag | Purpose |
 |------|---------|
 | `-s` | Silent mode - no progress bar or error messages |
-| `--connect-timeout 1` | Give up connecting after 1 second (local socket is instant) |
-| `--max-time 2` | Total operation timeout of 2 seconds (keeps hooks snappy) |
+| `--connect-timeout 0.5` | Give up connecting after 500ms (local socket is <1ms) |
+| `--max-time 1` | Total operation timeout of 1 second (keeps hooks snappy) |
 | `--unix-socket /tmp/...` | Connect via Unix socket instead of TCP |
 | `-X POST` | HTTP POST method |
 | `-H 'Content-Type: application/json'` | Tell server we're sending JSON |

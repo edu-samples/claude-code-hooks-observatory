@@ -170,7 +170,7 @@ class OutputManager:
             self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._listener.setblocking(False)
             self._listener.bind(output_socket_path)
-            self._listener.listen(5)
+            self._listener.listen(128)
             sys.stderr.write(f"Output socket: {output_socket_path}\n")
 
     def accept_pending(self) -> None:
@@ -236,6 +236,8 @@ class UnixHTTPServer(HTTPServer):
     """
 
     address_family = socket.AF_UNIX
+    # Increase from default 5 so parallel hooks queue instead of being refused
+    request_queue_size = 128
 
     def __init__(
         self, socket_path: str, handler: type, mode: int, output_manager: OutputManager

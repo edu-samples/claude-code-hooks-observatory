@@ -220,6 +220,9 @@ def main() -> None:
     elif args.pretty_json:
         _output_mode = "pretty-json"
 
+    # Increase listen backlog from default 5 to 128 so parallel hooks
+    # (e.g., from subagents) queue in the kernel instead of being refused.
+    HTTPServer.request_queue_size = 128
     server = HTTPServer((bind, port), HookHandler)
 
     # Startup message to stderr (keeps stdout clean for JSONL)

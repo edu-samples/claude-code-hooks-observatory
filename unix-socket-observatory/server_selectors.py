@@ -287,7 +287,7 @@ def main() -> None:
     input_sock.setblocking(False)
     input_sock.bind(socket_path)
     os.chmod(socket_path, args.mode)
-    input_sock.listen(5)
+    input_sock.listen(128)  # Large backlog so parallel hooks queue, not refuse
 
     # === Create the output socket (optional) ===
     output_sock: socket.socket | None = None
@@ -298,7 +298,7 @@ def main() -> None:
         output_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         output_sock.setblocking(False)
         output_sock.bind(args.output_socket)
-        output_sock.listen(5)
+        output_sock.listen(128)
         sys.stderr.write(f"Output socket: {args.output_socket}\n")
 
     # === Register with selectors ===
