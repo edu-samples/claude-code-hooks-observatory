@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pytest"]
+# dependencies = ["pytest", "pyyaml", "pygments"]
 # ///
 """
 Claude Code Hooks Observatory - Tests
@@ -38,7 +38,7 @@ from server import (
     enrich_payload,
     get_port,
     get_timestamp,
-    output_jsonl,
+    output_event,
     DEFAULT_PORT,
     ENV_PORT,
 )
@@ -85,7 +85,7 @@ class TestOutputJSONL:
         """Payload is compacted to single line."""
         data = {"key": "value", "nested": {"a": 1, "b": 2}}
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-            output_jsonl(data)
+            output_event(data)
             output = mock_stdout.getvalue()
         assert output.count("\n") == 1
         assert "\n" not in output.rstrip("\n")
@@ -94,7 +94,7 @@ class TestOutputJSONL:
         """Output can be parsed as JSON."""
         data = {"key": "value", "number": 42}
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-            output_jsonl(data)
+            output_event(data)
             output = mock_stdout.getvalue().strip()
         parsed = json.loads(output)
         assert parsed == data
@@ -103,7 +103,7 @@ class TestOutputJSONL:
         """No unnecessary whitespace in output."""
         data = {"a": 1, "b": 2}
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-            output_jsonl(data)
+            output_event(data)
             output = mock_stdout.getvalue().strip()
         # Compact format uses no spaces after separators
         assert " " not in output
