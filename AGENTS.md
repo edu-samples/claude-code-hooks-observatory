@@ -20,3 +20,7 @@ Load: agents/testing-guide.md
 ### When updating documentation:
 
 Load: agents/documentation-guide.md
+
+### When working on the unix-socket-observatory:
+
+Load: agents/unix-socket-guide.md

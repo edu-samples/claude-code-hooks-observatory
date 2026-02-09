@@ -47,6 +47,7 @@ Thumbs.db
 # Project specific
 hooks.jsonl
 *.bak-*
+*.sock
 
 # Claude local settings (user-specific, not for sharing)
 .claude/settings.local.json

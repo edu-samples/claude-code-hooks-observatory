@@ -1,65 +1,46 @@
 # Claude Code Hooks Observatory
 
-A transparent, educational REST server for observing Claude Code hook events in real-time.
+An educational project for observing Claude Code hook events in real-time. Two implementations teach different IPC concepts.
 
 ## Why?
 
-Learn how Claude Code hooks work by watching them fire in real-time. Fork this repo to build your own hook logic.
+Learn how Claude Code hooks work by watching them fire in real-time. Fork this repo to build your own hook logic. Two variants demonstrate different transport mechanisms and security models.
+
+## Variants
+
+| | [TCP Observatory](tcp-observatory/) | [Unix Socket Observatory](unix-socket-observatory/) |
+|---|---|---|
+| **Transport** | HTTP over TCP socket | HTTP over AF_UNIX socket |
+| **Client identity** | IP address (`_client`) | Kernel-verified PID/UID/GID |
+| **Security model** | Bind to localhost | Filesystem permissions + SO_PEERCRED |
+| **Hook command** | `curl http://127.0.0.1:23518/...` | `curl --unix-socket /tmp/claude-observatory.sock ...` |
+| **Multi-reader** | `tee` + FIFOs (Unix pipes) | Built-in `--output-socket` flag |
+| **Server implementations** | 1 (HTTPServer) | 2 (HTTPServer + raw selectors) |
+| **Best for** | Getting started, simplicity | Learning IPC security, seeing internals |
 
 ## Quick Start
 
-```bash
-# 1. Start the observatory
-./server.py
-
-# 2. In another terminal, install hooks
-./install-hooks.py --global
-
-# 3. Start Claude Code - watch events stream in!
-claude
-```
-
-## What You'll See
-
-```jsonl
-{"_ts":"2026-02-06T10:30:00+00:00","_event":"SessionStart","_client":"127.0.0.1","session_id":"abc123","source":"startup"}
-{"_ts":"2026-02-06T10:30:01+00:00","_event":"PreToolUse","_client":"127.0.0.1","tool_name":"Bash","tool_input":{"command":"ls"}}
-{"_ts":"2026-02-06T10:30:02+00:00","_event":"PostToolUse","_client":"127.0.0.1","tool_name":"Bash","tool_response":{...}}
-```
-
-## Configuration
-
-| Method | Command |
-|--------|---------|
-| Default port (23518) | `./server.py` |
-| Custom port | `./server.py --port 9999` |
-| Environment variable | `CLAUDE_REST_HOOK_WATCHER=9999 ./server.py` |
-| Network bind (dev only) | `./server.py --bind 0.0.0.0` |
-
-Port precedence: `--port` > `$CLAUDE_REST_HOOK_WATCHER` > `23518`
-
-## Installing Hooks
+### TCP (simpler)
 
 ```bash
-# Interactive mode
-./install-hooks.py
+cd tcp-observatory
+./server.py                    # Start server
+./install-hooks.py --global    # Install hooks (other terminal)
+claude                         # Watch events stream in!
+```
 
-# Global installation
-./install-hooks.py --global
+### Unix Socket (more to learn)
 
-# Project-only installation
-./install-hooks.py --project
-
-# Preview without writing
-./install-hooks.py --dry-run
-
-# Remove observatory hooks
-./install-hooks.py --uninstall
+```bash
+cd unix-socket-observatory
+./server.py                    # Start server (creates socket file)
+./install-hooks.py --global    # Install hooks (other terminal)
+claude                         # Watch events with PID/UID/GID!
 ```
 
 ## Hook Events
 
-The observatory captures all Claude Code hook events:
+Both variants capture all Claude Code hook events:
 
 | Event | Description |
 |-------|-------------|
@@ -76,33 +57,50 @@ The observatory captures all Claude Code hook events:
 | PreCompact | Before context compaction |
 | SessionEnd | Session terminates |
 
-## Documentation
-
-* [DEVELOPER_GUIDELINES.md](DEVELOPER_GUIDELINES.md) - Hook specs with official sources
-* [docs/PIPING_EXAMPLES.md](docs/PIPING_EXAMPLES.md) - jq, tee, FIFO recipes
-* [docs/TESTING.md](docs/TESTING.md) - Running tests
-* [FUTURE_WORK.md](FUTURE_WORK.md) - Roadmap
-
 ## Running Tests
 
 ```bash
-uv run --script test_server.py
+# All tests (both variants)
+uv run --script tcp-observatory/test_server.py -v
+uv run --script unix-socket-observatory/test_server.py -v
+
+# TCP only
+uv run --script tcp-observatory/test_server.py -v
+
+# Unix socket only
+uv run --script unix-socket-observatory/test_server.py -v
+uv run --script unix-socket-observatory/test_server_selectors.py -v
 ```
+
+## Documentation
+
+* [DEVELOPER_GUIDELINES.md](DEVELOPER_GUIDELINES.md) - Hook event specs with official sources
+* [FUTURE_WORK.md](FUTURE_WORK.md) - Roadmap
 
 ## Project Structure
 
 ```
 .
-├── server.py              # Main HTTP server (stdlib only)
-├── install-hooks.py       # Hook configuration installer
-├── test_server.py         # pytest tests
-├── configs/               # Example hook configurations
-│   ├── hooks-global.json
-│   ├── hooks-project.json
-│   └── hooks-minimal.json
-└── docs/
-    ├── PIPING_EXAMPLES.md
-    └── TESTING.md
+├── tcp-observatory/           # HTTP over TCP implementation
+│   ├── server.py              # HTTPServer-based server
+│   ├── install-hooks.py       # Hook installer (curl http://...)
+│   ├── test_server.py         # Tests
+│   ├── configs/               # Example hook configurations
+│   └── docs/                  # Piping examples, testing guide
+│
+├── unix-socket-observatory/   # HTTP over Unix socket implementation
+│   ├── server.py              # HTTPServer + AF_UNIX override
+│   ├── server_selectors.py    # Raw sockets + selectors (no HTTPServer)
+│   ├── install-hooks.py       # Hook installer (curl --unix-socket)
+│   ├── test_server.py         # Tests for HTTPServer variant
+│   ├── test_server_selectors.py  # Tests for selectors variant
+│   ├── SECURITY.md            # SO_PEERCRED, permissions, comparison
+│   ├── configs/               # Example hook configurations
+│   └── docs/                  # Piping examples, testing guide
+│
+├── agents/                    # AI assistant guidance
+├── docs/plans/                # Design documents
+└── DEVELOPER_GUIDELINES.md    # Shared hook event specifications
 ```
 
 ## License

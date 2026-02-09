@@ -2,6 +2,12 @@
 
 Prioritized backlog for Claude Code Hooks Observatory.
 
+## Completed
+
+### Unix Socket Variant
+
+Implemented in `unix-socket-observatory/`. Teaches IPC security concepts (SO_PEERCRED, filesystem permissions) and multi-reader output socket patterns. Includes both HTTPServer-based and raw selectors-based server implementations.
+
 ## High Priority
 
 ### Plugin Packaging
