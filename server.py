@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pyyaml"]
+# dependencies = ["pyyaml", "pygments"]
 # ///
 """
 Claude Code Hooks Observatory - Server
@@ -34,6 +34,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import yaml
+from pygments import highlight
+from pygments.lexers import YamlLexer
+from pygments.formatters import Terminal256Formatter
 
 DEFAULT_PORT = 23518
 DEFAULT_BIND = "127.0.0.1"
@@ -77,12 +80,17 @@ def output_event(data: dict[str, Any]) -> None:
     """Output a single event to stdout in the configured format."""
     match _output_mode:
         case "pretty-yaml":
-            print("---")
-            print(
-                yaml.dump(data, Dumper=_MultilineYamlDumper,
-                          default_flow_style=False, sort_keys=False),
-                end="", flush=True,
+            yaml_text = yaml.dump(
+                data, Dumper=_MultilineYamlDumper,
+                default_flow_style=False, sort_keys=False,
             )
+            if sys.stdout.isatty():
+                print("\033[90m---\033[0m")
+                print(highlight(yaml_text, YamlLexer(), Terminal256Formatter()),
+                      end="", flush=True)
+            else:
+                print("---")
+                print(yaml_text, end="", flush=True)
         case "pretty-json":
             print(json.dumps(data, indent=2), flush=True)
         case _:
