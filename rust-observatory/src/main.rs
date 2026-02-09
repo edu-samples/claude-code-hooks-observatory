@@ -575,7 +575,11 @@ fn main() {
 
             let addr = format!("{}:{}", bind, port);
             let listener = match TcpListener::bind(&addr) {
-                Ok(l) => l,
+                Ok(l) => {
+                    // Non-blocking so we can check the shutdown flag between accepts
+                    l.set_nonblocking(true).expect("set_nonblocking");
+                    l
+                }
                 Err(e) => {
                     eprintln!("Error: Cannot bind to {}: {}", addr, e);
                     std::process::exit(1);
@@ -590,6 +594,8 @@ fn main() {
             while running.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, addr)) => {
+                        // Set accepted connection to blocking for reads
+                        let _ = stream.set_nonblocking(false);
                         let peer = PeerInfo::Tcp {
                             client_addr: addr.ip().to_string(),
                         };
@@ -640,7 +646,10 @@ fn main() {
             let _ = std::fs::remove_file(&socket);
 
             let listener = match UnixListener::bind(&socket) {
-                Ok(l) => l,
+                Ok(l) => {
+                    l.set_nonblocking(true).expect("set_nonblocking");
+                    l
+                }
                 Err(e) => {
                     eprintln!("Error: Cannot bind to {}: {}", socket, e);
                     std::process::exit(1);
@@ -676,6 +685,7 @@ fn main() {
 
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let peer = get_peer_creds(&stream);
                         handle_connection(
                             &mut stream,
