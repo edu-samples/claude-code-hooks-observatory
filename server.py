@@ -1,6 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
+# dependencies = ["pyyaml"]
 # ///
 """
 Claude Code Hooks Observatory - Server
@@ -14,6 +15,8 @@ Why single-file?
 
 Usage:
     ./server.py                              # Default: 127.0.0.1:23518
+    ./server.py --pretty-json                # Human-readable indented JSON
+    ./server.py --pretty-yaml                # Human-readable YAML (multiline strings)
     ./server.py --port 9999                  # Custom port
     ./server.py --bind 0.0.0.0               # Bind to all interfaces
     CLAUDE_REST_HOOK_WATCHER=8080 ./server.py  # Port from env
@@ -30,9 +33,29 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import yaml
+
 DEFAULT_PORT = 23518
 DEFAULT_BIND = "127.0.0.1"
 ENV_PORT = "CLAUDE_REST_HOOK_WATCHER"
+
+# Module-level output mode (set from CLI args in main)
+# Values: "jsonl" (default), "pretty-json", "pretty-yaml"
+_output_mode = "jsonl"
+
+
+class _MultilineYamlDumper(yaml.SafeDumper):
+    """YAML dumper that renders strings containing newlines as block scalars (|)."""
+    pass
+
+
+def _str_representer(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_MultilineYamlDumper.add_representer(str, _str_representer)
 
 
 def get_timestamp() -> str:
@@ -50,10 +73,20 @@ def enrich_payload(payload: dict[str, Any], event: str, client: str) -> dict[str
     }
 
 
-def output_jsonl(data: dict[str, Any]) -> None:
-    """Output a single JSONL line to stdout."""
-    line = json.dumps(data, separators=(",", ":"))
-    print(line, flush=True)
+def output_event(data: dict[str, Any]) -> None:
+    """Output a single event to stdout in the configured format."""
+    match _output_mode:
+        case "pretty-yaml":
+            print("---")
+            print(
+                yaml.dump(data, Dumper=_MultilineYamlDumper,
+                          default_flow_style=False, sort_keys=False),
+                end="", flush=True,
+            )
+        case "pretty-json":
+            print(json.dumps(data, indent=2), flush=True)
+        case _:
+            print(json.dumps(data, separators=(",", ":")), flush=True)
 
 
 class HookHandler(BaseHTTPRequestHandler):
@@ -87,7 +120,7 @@ class HookHandler(BaseHTTPRequestHandler):
 
         # Enrich and output JSONL
         enriched = enrich_payload(payload, event, client)
-        output_jsonl(enriched)
+        output_event(enriched)
 
         # Return empty 200 (no-op response)
         self.send_response(200)
@@ -118,6 +151,8 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 Examples:
     ./server.py                              # Default: 127.0.0.1:23518
+    ./server.py --pretty-json                # Human-readable indented JSON
+    ./server.py --pretty-yaml                # Human-readable YAML (multiline strings)
     ./server.py --port 9999                  # Custom port
     ./server.py --bind 0.0.0.0               # Bind to all interfaces
     CLAUDE_REST_HOOK_WATCHER=8080 ./server.py  # Port from env
@@ -137,6 +172,19 @@ Port precedence: --port > $CLAUDE_REST_HOOK_WATCHER > 23518
         default=DEFAULT_BIND,
         help=f"Address to bind to (default: {DEFAULT_BIND})",
     )
+    fmt = parser.add_mutually_exclusive_group()
+    fmt.add_argument(
+        "--pretty-json",
+        action="store_true",
+        default=False,
+        help="Output indented multiline JSON instead of compact JSONL",
+    )
+    fmt.add_argument(
+        "--pretty-yaml",
+        action="store_true",
+        default=False,
+        help="Output YAML with block scalars for multiline strings",
+    )
     return parser.parse_args()
 
 
@@ -155,9 +203,14 @@ def get_port(cli_port: int | None) -> int:
 
 def main() -> None:
     """Start the observatory server."""
+    global _output_mode
     args = parse_args()
     port = get_port(args.port)
     bind = args.bind
+    if args.pretty_yaml:
+        _output_mode = "pretty-yaml"
+    elif args.pretty_json:
+        _output_mode = "pretty-json"
 
     server = HTTPServer((bind, port), HookHandler)
 
