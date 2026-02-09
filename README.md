@@ -16,7 +16,7 @@ Learn how Claude Code hooks work by watching them fire in real-time. Fork this r
 | **Security model** | Bind to localhost | Filesystem permissions + SO_PEERCRED | Both |
 | **Hook command** | `curl http://...` | `curl --unix-socket ...` | Either |
 | **Multi-reader** | `tee` + FIFOs | `--output-socket` flag | `--output-socket` flag |
-| **YAML highlighting** | `pygments` | `pygments` | `syntect` |
+| **YAML highlighting** | `pygments` | `pygments` | ANSI bold (terminal-native) |
 | **Server implementations** | 1 (HTTPServer) | 2 (HTTPServer + raw selectors) | 1 (raw sockets) |
 | **Best for** | Getting started | IPC security concepts | Rust concepts, single binary |
 

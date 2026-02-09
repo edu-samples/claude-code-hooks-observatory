@@ -90,11 +90,11 @@ cargo test -- -v     # Verbose output
 | Transport | TCP only | Unix only | Both (subcommands) |
 | Language | Python 3.10+ | Python 3.10+ | Rust (compiled) |
 | HTTP layer | `http.server` stdlib | HTTPServer or raw selectors | Raw `std` sockets |
-| YAML highlighting | `pygments` | `pygments` | `syntect` |
+| YAML highlighting | `pygments` | `pygments` | ANSI bold (terminal-native) |
 | Peer credentials | N/A | `SO_PEERCRED` (Python) | `SO_PEERCRED` (libc FFI) |
 | Default port | 23518 | N/A | 23518 |
 | Default socket | N/A | `/tmp/claude-observatory.sock` | `/tmp/claude-observatory-rust.sock` |
-| Dependencies | stdlib only | stdlib only | clap, serde, syntect, chrono, libc |
+| Dependencies | stdlib only | stdlib only | clap, serde, chrono, libc |
 | Install | `uv run --script` | `uv run --script` | `cargo build --release` |
 
 ## Documentation

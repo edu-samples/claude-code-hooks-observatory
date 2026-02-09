@@ -5,7 +5,7 @@
 //!
 //! Why Rust?
 //!     This implementation teaches Rust-specific concepts: enums for transport
-//!     abstraction, raw libc FFI for SO_PEERCRED, syntect for syntax highlighting,
+//!     abstraction, raw libc FFI for SO_PEERCRED, terminal-native YAML formatting,
 //!     and ownership patterns for socket lifecycle management.
 //!
 //! Usage:
@@ -26,11 +26,6 @@ use std::sync::Arc;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
-use syntect::highlighting::Style;
-use syntect::util::LinesWithEndings;
 
 // === CLI DEFINITIONS ===
 
@@ -112,65 +107,55 @@ enum OutputMode {
     PrettyYaml, // YAML with syntax highlighting (if TTY)
 }
 
-/// Holds syntect resources loaded once at startup.
-/// Creating SyntaxSet/ThemeSet is expensive, so we reuse them for every event.
-struct YamlHighlighter {
-    syntax_set: SyntaxSet,
-    theme_set: ThemeSet,
-}
+/// Minimal YAML formatter that uses terminal-native attributes (bold/normal)
+/// instead of forcing a color theme.
+///
+/// Unlike syntect/pygments which impose specific colors (even with 256-color
+/// approximation), this uses only bold (\x1b[1m) for keys and the terminal's
+/// default foreground for values. The output adapts perfectly to any terminal
+/// color scheme - dark, light, solarized, etc.
+struct YamlHighlighter;
 
 impl YamlHighlighter {
     fn new() -> Self {
-        Self {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
-        }
+        Self
     }
 
-    /// Highlight YAML text for terminal output using syntect + 256-color codes.
+    /// Highlight YAML by bolding keys, leaving values as default foreground.
     ///
-    /// Uses indexed 256-color ANSI codes (\x1b[38;5;Nm) instead of 24-bit RGB
-    /// (\x1b[38;2;R;G;Bm). This matches Python's pygments Terminal256Formatter
-    /// behavior: indexed colors can be remapped by terminal color schemes (KDE
-    /// Konsole, iTerm2, etc.), so the output adapts to the user's dark/light theme.
-    ///
-    /// The `ansi_colours` crate approximates RGB → nearest 256-color palette entry.
+    /// Detects YAML mapping keys (lines matching `indent + key + ":"`) and
+    /// applies bold. Everything else uses the terminal's normal foreground color.
     fn highlight(&self, yaml_text: &str) -> String {
-        let syntax = self
-            .syntax_set
-            .find_syntax_by_extension("yaml")
-            .expect("YAML syntax should be built into syntect defaults");
-        let theme = &self.theme_set.themes["base16-ocean.dark"];
-        let mut h = HighlightLines::new(syntax, theme);
         let mut output = String::new();
-        for line in LinesWithEndings::from(yaml_text) {
-            let ranges = h.highlight_line(line, &self.syntax_set).unwrap();
-            let escaped = as_256_color_terminal_escaped(&ranges);
-            output.push_str(&escaped);
+        for line in yaml_text.lines() {
+            let trimmed = line.trim_start();
+            // YAML mapping key: starts with word chars (or quoted), followed by ":"
+            // Skip list items (- ...) and comments (# ...)
+            if !trimmed.is_empty()
+                && !trimmed.starts_with('-')
+                && !trimmed.starts_with('#')
+            {
+                // Find the key-value separator ": " or trailing ":"
+                if let Some(colon_pos) = trimmed.find(": ").map(|p| {
+                    // Offset back to full line position
+                    p + (line.len() - trimmed.len())
+                }).or_else(|| {
+                    if line.ends_with(':') { Some(line.len() - 1) } else { None }
+                }) {
+                    // Bold the key + colon, normal for the value
+                    output.push_str(&format!(
+                        "\x1b[1m{}\x1b[22m{}\n",
+                        &line[..=colon_pos],
+                        &line[colon_pos + 1..]
+                    ));
+                    continue;
+                }
+            }
+            output.push_str(line);
+            output.push('\n');
         }
-        // Reset terminal colors at the end
-        output.push_str("\x1b[0m");
         output
     }
-}
-
-/// Convert syntect highlight ranges to 256-color ANSI escape sequences.
-///
-/// This is the 256-color equivalent of syntect's `as_24_bit_terminal_escaped()`.
-/// Instead of emitting exact RGB values (\x1b[38;2;R;G;Bm) which terminals display
-/// literally, we emit indexed color codes (\x1b[38;5;Nm) that terminals can remap
-/// based on the user's color scheme.
-///
-/// The approximation uses `ansi_colours::ansi256_from_rgb()` which maps RGB to the
-/// nearest entry in the standard 256-color palette (6×6×6 color cube + grayscale ramp).
-fn as_256_color_terminal_escaped(ranges: &[(Style, &str)]) -> String {
-    let mut output = String::new();
-    for &(style, text) in ranges {
-        let fg = style.foreground;
-        let idx = ansi_colours::ansi256_from_rgb((fg.r, fg.g, fg.b));
-        output.push_str(&format!("\x1b[38;5;{}m{}", idx, text));
-    }
-    output
 }
 
 /// Format a single event in the configured output format.

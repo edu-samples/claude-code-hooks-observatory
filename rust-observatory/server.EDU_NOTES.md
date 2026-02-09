@@ -82,20 +82,38 @@ Platform-specific code uses `#[cfg(target_os)]`:
 // Falls through to PeerInfo::Unknown on other platforms
 ```
 
-### YAML Highlighting with syntect
+### YAML Highlighting: Terminal-Native vs Theme-Based
 
-`syntect` is Rust's equivalent of Python's `pygments`. Key difference: we load syntax definitions and themes **once at startup** and reuse them:
+The Python variants use `pygments` with `Terminal256Formatter`, which emits indexed 256-color ANSI codes (`\x1b[38;5;Nm`). The Rust equivalent would be `syntect`, but both approaches share a problem: they impose a specific color theme that may clash with the user's terminal settings (dark/light/solarized).
+
+Instead, we use **terminal-native formatting** -- only bold (`\x1b[1m`) for YAML keys and the terminal's default foreground for values:
 
 ```rust
-struct YamlHighlighter {
-    syntax_set: SyntaxSet,   // All syntax definitions (expensive to load)
-    theme_set: ThemeSet,     // All color themes
+struct YamlHighlighter;  // No syntax definitions or themes needed
+
+impl YamlHighlighter {
+    fn highlight(&self, yaml_text: &str) -> String {
+        // Bold keys, normal values - adapts to ANY terminal theme
+        for line in yaml_text.lines() {
+            if is_yaml_key_line(line) {
+                output += "\x1b[1m" + key + ":\x1b[22m" + value;
+            }
+        }
+    }
 }
 ```
 
-The `highlight()` method produces ANSI escape codes for terminal coloring. When stdout isn't a TTY (piped), we output plain YAML without colors.
+**Why not syntect?** Three levels of terminal color output exist:
 
-**256-color vs 24-bit color**: syntect's built-in `as_24_bit_terminal_escaped()` emits exact RGB values (`\x1b[38;2;R;G;Bm`). These bypass terminal color schemes entirely -- your KDE Konsole or iTerm2 dark/light theme has no effect. Instead, we use `ansi_colours::ansi256_from_rgb()` to approximate RGB→256-color palette (`\x1b[38;5;Nm`). Indexed colors can be remapped by the terminal, matching how Python's pygments `Terminal256Formatter` works. This is the same technique used by `bat` (the popular `cat` replacement).
+| Level | Escape code | Terminal can remap? | Example |
+|-------|------------|--------------------|---------|
+| 24-bit RGB | `\x1b[38;2;R;G;Bm` | No - exact color forced | syntect default |
+| 256-color indexed | `\x1b[38;5;Nm` | Partially (first 16 colors) | pygments, `bat` |
+| Terminal attributes | `\x1b[1m` (bold) | Yes - uses terminal's own colors | **our approach** |
+
+The attribute-only approach produces output that looks correct in every terminal theme. The tradeoff is less colorful output, but for a diagnostic tool this is preferable to colors that clash with the user's environment.
+
+When stdout isn't a TTY (piped), we output plain YAML without any ANSI escapes.
 
 ### Drop Guard for Cleanup
 
@@ -144,8 +162,6 @@ The listener is non-blocking so we can check the shutdown flag between accepts. 
 | `serde` + `serde_json` | JSON serialization | `json` stdlib |
 | `serde_yaml` | YAML serialization | `pyyaml` |
 | `chrono` | Timestamps | `datetime` stdlib |
-| `syntect` | Syntax highlighting | `pygments` |
-| `ansi_colours` | RGB → 256-color approximation | (built into pygments `Terminal256Formatter`) |
 | `libc` | Raw C function bindings | `socket`/`struct` stdlib |
 
 Note: `serde_yaml` 0.9 is archived (the author deprecated it). For production use, consider `serde_yml` or manual YAML formatting. For this educational project, 0.9 works fine and the API is well-documented.
