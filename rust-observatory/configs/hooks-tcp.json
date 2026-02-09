@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SessionStart' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SessionStart' || true"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=UserPromptSubmit' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=UserPromptSubmit' || true"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PreToolUse' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PreToolUse' || true"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PostToolUse' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PostToolUse' || true"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PostToolUseFailure' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PostToolUseFailure' || true"
           }
         ]
       }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PermissionRequest' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PermissionRequest' || true"
           }
         ]
       }
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=Notification' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=Notification' || true"
           }
         ]
       }
@@ -82,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=Stop' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=Stop' || true"
           }
         ]
       }
@@ -93,7 +93,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SubagentStart' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SubagentStart' || true"
           }
         ]
       }
@@ -104,7 +104,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SubagentStop' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SubagentStop' || true"
           }
         ]
       }
@@ -115,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PreCompact' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=PreCompact' || true"
           }
         ]
       }
@@ -126,7 +126,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SessionEnd' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 -X POST -H 'Content-Type: application/json' -d @- 'http://127.0.0.1:23519/hook?event=SessionEnd' || true"
           }
         ]
       }

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PreToolUse' || true"
+            "command": "curl -s --connect-timeout 1 --max-time 2 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PreToolUse' || true"
           }
         ]
       }

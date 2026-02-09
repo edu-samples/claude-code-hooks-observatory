@@ -87,7 +87,7 @@ def generate_curl_command(socket_path: str, event: str) -> str:
     Appends '|| true' so hooks silently no-op when server is not running.
     """
     return (
-        f"curl -s --connect-timeout 2 --max-time 5 "
+        f"curl -s --connect-timeout 1 --max-time 2 "
         f"--unix-socket {socket_path} "
         f"-X POST -H 'Content-Type: application/json' -d @- "
         f"'http://localhost/hook?event={event}' || true"

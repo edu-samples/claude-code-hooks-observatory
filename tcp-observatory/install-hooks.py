@@ -86,7 +86,7 @@ def generate_curl_command(port: int, bind: str, event: str) -> str:
     Claude Code reports as a non-blocking "hook error" on every tool use.
     """
     return (
-        f"curl -s --connect-timeout 2 --max-time 5 "
+        f"curl -s --connect-timeout 1 --max-time 2 "
         f"-X POST -H 'Content-Type: application/json' -d @- "
         f"'http://{bind}:{port}/hook?event={event}' || true"
     )
