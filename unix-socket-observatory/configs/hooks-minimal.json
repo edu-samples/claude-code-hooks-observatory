@@ -1,0 +1,16 @@
+{
+  "_comment": "Minimal configuration - only PreToolUse for quick testing. Socket /tmp/claude-observatory.sock is default.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PreToolUse' || true"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "_comment": "Claude Code Hooks Observatory (Unix Socket) configuration. Socket path /tmp/claude-observatory.sock is default. Change to match your --socket or $CLAUDE_UNIX_HOOK_WATCHER",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=SessionStart' || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=UserPromptSubmit' || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PreToolUse' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PostToolUse' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PostToolUseFailure' || true"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PermissionRequest' || true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=Notification' || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=Stop' || true"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=SubagentStart' || true"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=SubagentStop' || true"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=PreCompact' || true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --connect-timeout 2 --max-time 5 --unix-socket /tmp/claude-observatory.sock -X POST -H 'Content-Type: application/json' -d @- 'http://localhost/hook?event=SessionEnd' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
