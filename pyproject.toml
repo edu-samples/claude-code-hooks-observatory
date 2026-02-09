@@ -10,5 +10,5 @@ license = {text = "MIT"}
 test = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
-testpaths = ["."]
+testpaths = ["tcp-observatory", "unix-socket-observatory"]
 python_files = ["test_*.py"]

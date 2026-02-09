@@ -79,11 +79,16 @@ def get_project_settings_path() -> Path:
 
 
 def generate_curl_command(port: int, bind: str, event: str) -> str:
-    """Generate curl command for a hook event."""
+    """Generate curl command for a hook event.
+
+    Appends '|| true' so hooks silently no-op when server is not running.
+    Without this, curl returns exit code 7 (connection refused) which
+    Claude Code reports as a non-blocking "hook error" on every tool use.
+    """
     return (
         f"curl -s --connect-timeout 2 --max-time 5 "
         f"-X POST -H 'Content-Type: application/json' -d @- "
-        f"'http://{bind}:{port}/hook?event={event}'"
+        f"'http://{bind}:{port}/hook?event={event}' || true"
     )
 
 
