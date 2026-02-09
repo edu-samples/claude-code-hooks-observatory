@@ -8,6 +8,10 @@ Prioritized backlog for Claude Code Hooks Observatory.
 
 Implemented in `unix-socket-observatory/`. Teaches IPC security concepts (SO_PEERCRED, filesystem permissions) and multi-reader output socket patterns. Includes both HTTPServer-based and raw selectors-based server implementations.
 
+### Rust Variant
+
+Implemented in `rust-observatory/`. Single compiled binary supporting both TCP and Unix socket transports via subcommands. Teaches Rust-specific concepts: enums for transport abstraction, raw libc FFI for SO_PEERCRED, syntect for syntax highlighting, Drop trait for resource cleanup, and generic functions over stream types.
+
 ## High Priority
 
 ### Plugin Packaging
