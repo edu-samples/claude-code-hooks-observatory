@@ -85,6 +85,7 @@ cd rust-observatory && cargo test
 ## Documentation
 
 * [DEVELOPER_GUIDELINES.md](DEVELOPER_GUIDELINES.md) - Hook event specs with official sources
+* [docs/CONCURRENCY.md](docs/CONCURRENCY.md) - How servers handle parallel requests, backlog, timeouts
 * [FUTURE_WORK.md](FUTURE_WORK.md) - Roadmap
 
 ## Project Structure

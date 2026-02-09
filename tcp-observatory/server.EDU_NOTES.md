@@ -87,6 +87,22 @@ This three-level precedence is a common pattern. The env var allows setting the 
 
 This lets you pipe stdout cleanly: `./server.py | jq '.'` works because startup messages go to stderr.
 
+## Concurrency & Parallel Requests
+
+The server is single-threaded. `serve_forever()` uses a `selectors.PollSelector` (on Linux) that blocks until a connection is ready, handles it synchronously, then loops back to wait for the next one.
+
+When multiple hooks fire simultaneously (e.g., from parallel subagents):
+
+1. First connection is accepted and processed (~2ms)
+2. Remaining connections wait in the kernel's listen backlog (up to 128)
+3. After the first request completes, the next is accepted from the queue
+
+No data is lost unless 129+ hooks arrive within a single request's processing time (effectively impossible). The `request_queue_size = 128` setting tells the kernel how many pending connections to hold.
+
+Curl's `--connect-timeout 0.5 --max-time 1` ensures Claude Code never stalls more than 1 second per hook, even if the server is down or slow.
+
+See [docs/CONCURRENCY.md](../docs/CONCURRENCY.md) for the full cross-variant analysis including backlog behavior, stdout atomicity, and SIGKILL safety.
+
 ## What HTTPServer Hides
 
 If you want to see what's happening under the hood, check the [unix-socket-observatory/server_selectors.py](../unix-socket-observatory/server_selectors.py) which implements the same functionality using raw sockets and the `selectors` module - no HTTPServer abstraction.

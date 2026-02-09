@@ -79,6 +79,16 @@ The `OutputManager` creates a second Unix socket for readers:
 | Output | stdout only | stdout / output socket / tee |
 | Security | Bind address | File permissions (`--mode`) |
 
+## Concurrency & Parallel Requests
+
+Same single-threaded model as the TCP variant: `serve_forever()` processes one request at a time, with the rest queuing in the kernel's listen backlog (128 connections).
+
+One additional concern specific to this variant: the **OutputManager** uses `sendall()` to write to output socket readers. If a reader is slow or stalled, `sendall()` blocks, and all hook processing pauses until the write completes or the reader disconnects. Dead readers are detected and removed on write failure, but slow readers (buffer full but not disconnected) can cause latency spikes.
+
+Mitigation: always use consumers that read promptly (e.g., `socat ... | jq ...`), or add a read deadline on the consumer side.
+
+See [../docs/CONCURRENCY.md](../docs/CONCURRENCY.md) for the full cross-variant analysis.
+
 ## What This Hides
 
 This file uses HTTPServer which handles socket creation, accept loops, and HTTP parsing behind clean abstractions. To see every step done manually, read [server_selectors.EDU_NOTES.md](server_selectors.EDU_NOTES.md).

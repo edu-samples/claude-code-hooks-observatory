@@ -147,6 +147,34 @@ The listener is non-blocking so we can check the shutdown flag between accepts. 
 
 Note: `serde_yaml` 0.9 is archived (the author deprecated it). For production use, consider `serde_yml` or manual YAML formatting. For this educational project, 0.9 works fine and the API is well-documented.
 
+## Concurrency & Parallel Requests
+
+The Rust server uses a single-threaded non-blocking accept loop with blocking connection handling:
+
+```rust
+listener.set_nonblocking(true);           // Listener: non-blocking (can check shutdown flag)
+
+while running.load(Ordering::SeqCst) {
+    match listener.accept() {
+        Ok((mut stream, _)) => {
+            stream.set_nonblocking(false); // Connection: blocking (reliable reads)
+            handle_connection(&mut stream, ...);
+        }
+        Err(WouldBlock) => sleep(50ms),   // No connection ready, poll again
+    }
+}
+```
+
+**Listen backlog**: 128 (Rust std default, hardcoded in the stdlib, not configurable via API -- see [rust#55614](https://github.com/rust-lang/rust/issues/55614)). This matches what we set explicitly on the Python servers.
+
+**Platform gotcha with non-blocking inheritance**: On Linux, `accept4()` does NOT inherit the listener's `O_NONBLOCK` flag onto accepted connections. On BSD/macOS, standard `accept()` DOES inherit it. The explicit `set_nonblocking(false)` after accept makes behavior consistent across platforms.
+
+**50ms sleep tradeoff**: When no connections are pending, the server sleeps 50ms before polling again. This adds 0-50ms jitter to the first request after idle, but avoids burning CPU. An alternative would be `poll()`/`epoll()` to block until data arrives, but that adds complexity for negligible benefit at hook event rates.
+
+**stdout and SIGKILL**: After `print!()` + `flush()`, data is in the kernel pipe buffer (64KB on Linux) and survives process death. Rust's `LineWriter` on stdout has a 1024-byte userspace buffer -- if SIGKILL arrives between `print!()` and `flush()`, that buffer is lost (Drop doesn't run on SIGKILL). Since we flush after every event, at most one event could be lost.
+
+See [../docs/CONCURRENCY.md](../docs/CONCURRENCY.md) for the full cross-variant analysis.
+
 ## What This Doesn't Do
 
 Following the "no-op by default" principle:

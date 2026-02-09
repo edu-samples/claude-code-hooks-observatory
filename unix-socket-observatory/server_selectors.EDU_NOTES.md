@@ -77,9 +77,22 @@ Things `BaseHTTPRequestHandler` handles that we do manually:
 | Request logging | `log_message()` | `sys.stderr.write()` |
 | Keep-alive | `handle_one_request()` loop | Close after each request |
 
-## Single-Threaded Design
+## Concurrency & the Selectors Paradox
 
-Both `server.py` and this file are single-threaded. Hook payloads are small and processing is fast, so one connection at a time is sufficient. The selectors event loop handles the output socket alongside the input socket in the same thread.
+Despite using `selectors` (which is designed for concurrent I/O), this server processes connections **sequentially**. When `accept()` returns a connection, `handle_input_connection()` reads the full request, processes it, responds, and closes the connection before returning to the event loop.
+
+This means the selectors framework is underutilized -- it's used for the accept/poll pattern (waiting efficiently for new connections and output socket readers) but not for concurrent request handling. True concurrent handling would require:
+
+* Registering each active connection with the selector
+* Using `EVENT_READ | EVENT_WRITE` to handle I/O readiness
+* Maintaining per-connection state machines
+* Never blocking in the event loop
+
+The sequential approach is intentional: it's simpler to understand and sufficient for Claude Code's hook event rate. The listen backlog (128) ensures parallel hooks queue in the kernel rather than being refused.
+
+**Partial read concern**: The body-reading loop has no timeout. If a client connects and sends headers but stalls before sending the full body, the server blocks indefinitely waiting for the remaining bytes. In production, you'd add `socket.settimeout()`.
+
+See [../docs/CONCURRENCY.md](../docs/CONCURRENCY.md) for the full cross-variant concurrency analysis.
 
 ## Comparison with server.py
 
