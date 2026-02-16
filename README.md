@@ -68,6 +68,32 @@ Both variants capture all Claude Code hook events:
 | PreCompact | Before context compaction |
 | SessionEnd | Session terminates |
 
+## Querying Logs
+
+All variants log to `/tmp/claude/observatory/` when run via `run-with-tee-logrotator.sh`. Use `scripts/query-hooks.py` to filter:
+
+```bash
+# Which sessions are waiting for user input right now?
+./scripts/query-hooks.py --waiting
+
+# Full waiting history as JSONL (pipe to jq for analysis)
+./scripts/query-hooks.py --waiting=all --jsonl | jq -r '.reason' | sort | uniq -c | sort -rn
+
+# Show last 5 PreToolUse events (human-readable)
+./scripts/query-hooks.py PreToolUse -n 5
+
+# Bash commands only, as JSONL for piping
+./scripts/query-hooks.py PreToolUse --tool Bash --jsonl
+
+# Pipe to jq for further analysis
+./scripts/query-hooks.py --jsonl | jq -r '._event' | sort | uniq -c | sort -rn
+
+# Extract just the commands being run
+./scripts/query-hooks.py PreToolUse --tool Bash --jsonl | jq -r '.tool_input.command'
+```
+
+See `./scripts/query-hooks.py --help` for all options (`--tool`, `--session`, `--last`, `--file`, `--waiting`).
+
 ## Running Tests
 
 ```bash
@@ -85,6 +111,7 @@ cd rust-observatory && cargo test
 ## Documentation
 
 * [DEVELOPER_GUIDELINES.md](DEVELOPER_GUIDELINES.md) - Hook event specs with official sources
+* [tcp-observatory/docs/PIPING_EXAMPLES.md](tcp-observatory/docs/PIPING_EXAMPLES.md) - jq filters, log rotation, FIFOs, alerting recipes
 * [docs/CONCURRENCY.md](docs/CONCURRENCY.md) - How servers handle parallel requests, backlog, timeouts
 * [FUTURE_WORK.md](FUTURE_WORK.md) - Roadmap
 
@@ -115,6 +142,9 @@ cd rust-observatory && cargo test
 │   ├── tests/                 # 8 integration tests
 │   ├── configs/               # TCP, Unix, minimal hook configs
 │   └── docs/                  # Testing guide
+│
+├── scripts/                   # Shared query/analysis tools
+│   └── query-hooks.py         # Filter logs by event type, tool, session
 │
 ├── agents/                    # AI assistant guidance
 ├── docs/plans/                # Design documents

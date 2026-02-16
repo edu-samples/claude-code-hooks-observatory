@@ -42,6 +42,15 @@ Note the `_peer_pid`, `_peer_uid`, `_peer_gid` fields - these come from the kern
 ./server.py --pretty-yaml     # YAML with syntax highlighting
 ```
 
+## Log Rotation
+
+Use `run-with-tee-logrotator.sh` to see output on screen while logging to a rotating file:
+
+```bash
+./run-with-tee-logrotator.sh --pretty-yaml
+# Logs rotate at 10MB, keeps 10 files in /tmp/claude/observatory/
+```
+
 ## Configuration
 
 | Method | Command |
