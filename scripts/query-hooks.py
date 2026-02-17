@@ -37,21 +37,31 @@ Examples:
 
     # Count events by type
     ./scripts/query-hooks.py --jsonl | jq -r '._event' | sort | uniq -c | sort -rn
+
+    # Custom columns with tmux info
+    ./scripts/query-hooks.py --waiting --columns state,ago,tmux_target,project,session_id
+
+    # CSV export
+    ./scripts/query-hooks.py --waiting --csv --columns state,session_id,project,tmux_target
 """
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
+import subprocess
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -73,6 +83,30 @@ STATE_ORDER = {
     # RUN:* states all get order 4 (see _state_sort_key)
     "DEAD": 5,
 }
+
+# Known columns for --waiting mode (used by --columns validation)
+KNOWN_COLUMNS = {
+    "state", "ago", "project", "reason", "session_id", "cwd", "start_cwd",
+    "alive", "match", "_ts", "_version",
+    "tmux_session", "tmux_window", "tmux_pane", "tmux_cwd", "tmux_target",
+}
+
+# Default table columns (unchanged from pre-0.5.0 behavior)
+DEFAULT_TABLE_COLUMNS = ["state", "ago", "project", "reason", "session_id"]
+
+
+@dataclass
+class TmuxInfo:
+    """Tmux pane metadata for a process."""
+    session_name: str
+    window_index: str
+    pane_index: str
+    pane_cwd: str
+
+    @property
+    def target(self) -> str:
+        """Tmux target spec, e.g. 'main:2.0'."""
+        return f"{self.session_name}:{self.window_index}.{self.pane_index}"
 
 
 def _liveness_check(rec: dict, live_cwds: set[str]) -> str:
@@ -249,16 +283,16 @@ def time_ago(ts_str: str) -> str:
         return "?"
 
 
-def get_live_claude_cwds() -> set[str]:
-    """Get working directories of all running claude processes via /proc.
+def get_claude_pid_cwd_map() -> dict[int, str]:
+    """Get {pid: cwd} for all running claude processes via /proc.
 
     On Linux, reads /proc/<pid>/cwd symlinks for processes named 'claude'.
-    Falls back to empty set on non-Linux or permission errors.
+    Falls back to empty dict on non-Linux or permission errors.
     """
-    cwds: set[str] = set()
+    pid_map: dict[int, str] = {}
     proc = Path("/proc")
     if not proc.is_dir():
-        return cwds
+        return pid_map
     for pid_dir in proc.iterdir():
         if not pid_dir.name.isdigit():
             continue
@@ -267,10 +301,132 @@ def get_live_claude_cwds() -> set[str]:
             if comm != "claude":
                 continue
             cwd = os.readlink(pid_dir / "cwd")
-            cwds.add(cwd)
+            pid_map[int(pid_dir.name)] = cwd
         except (OSError, PermissionError):
             continue
-    return cwds
+    return pid_map
+
+
+def get_live_claude_cwds() -> set[str]:
+    """Get working directories of all running claude processes via /proc.
+
+    Thin wrapper around get_claude_pid_cwd_map() for backwards compatibility.
+    """
+    return set(get_claude_pid_cwd_map().values())
+
+
+def get_proc_ppid(pid: int) -> int | None:
+    """Read parent PID from /proc/<pid>/stat. Returns None on failure."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # Format: pid (comm) state ppid ...
+        # comm can contain spaces/parens, so find last ')' first
+        close_paren = stat.rfind(")")
+        if close_paren < 0:
+            return None
+        fields = stat[close_paren + 2:].split()
+        # fields[0] = state, fields[1] = ppid
+        return int(fields[1]) if len(fields) >= 2 else None
+    except (OSError, ValueError):
+        return None
+
+
+def get_tmux_pane_map() -> dict[int, TmuxInfo]:
+    """Parse tmux list-panes to build {shell_pid: TmuxInfo}.
+
+    Returns empty dict if tmux is not installed or not running.
+    """
+    pane_map: dict[int, TmuxInfo] = {}
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_pid} #{pane_current_path} #{session_name} #{window_index} #{pane_index}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return pane_map
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return pane_map
+
+    for line in result.stdout.splitlines():
+        parts = line.split(" ", 4)
+        if len(parts) < 5:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        pane_map[pid] = TmuxInfo(
+            session_name=parts[2],
+            window_index=parts[3],
+            pane_index=parts[4],
+            pane_cwd=parts[1],
+        )
+    return pane_map
+
+
+def build_tmux_for_claude(
+    claude_pids: dict[int, str], pane_map: dict[int, TmuxInfo],
+) -> dict[int, TmuxInfo]:
+    """Walk ancestor chain from each claude PID to find its tmux pane.
+
+    Returns {claude_pid: TmuxInfo} for PIDs that are inside a tmux pane.
+    Max 15 hops to prevent infinite loops.
+    """
+    if not pane_map:
+        return {}
+    result: dict[int, TmuxInfo] = {}
+    for claude_pid in claude_pids:
+        pid = claude_pid
+        for _ in range(15):
+            if pid in pane_map:
+                result[claude_pid] = pane_map[pid]
+                break
+            ppid = get_proc_ppid(pid)
+            if ppid is None or ppid <= 1:
+                break
+            pid = ppid
+    return result
+
+
+def match_session_to_claude_pid(
+    rec: dict, pid_cwd_map: dict[int, str],
+) -> int | None:
+    """CWD-match a session record to a claude PID.
+
+    Uses the same 4-layer matching logic as _liveness_check but returns
+    the matched PID instead of the method string.
+    """
+    start_cwd = rec.get("start_cwd", "")
+    last_cwd = rec.get("cwd", "")
+
+    # Layer 1: exact match on start CWD
+    if start_cwd:
+        for pid, cwd in pid_cwd_map.items():
+            if cwd == start_cwd:
+                return pid
+    # Layer 2: exact match on latest CWD
+    if last_cwd:
+        for pid, cwd in pid_cwd_map.items():
+            if cwd == last_cwd:
+                return pid
+    # Layer 3: path ancestry on start CWD
+    if start_cwd:
+        for pid, cwd in pid_cwd_map.items():
+            try:
+                Path(start_cwd).relative_to(cwd)
+                return pid
+            except ValueError:
+                pass
+    # Layer 4: path ancestry on last CWD
+    if last_cwd and last_cwd != start_cwd:
+        for pid, cwd in pid_cwd_map.items():
+            try:
+                Path(last_cwd).relative_to(cwd)
+                return pid
+            except ValueError:
+                pass
+    return None
 
 
 def _is_tracked_event(event: dict) -> bool:
@@ -353,11 +509,15 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
                 enriched = {k: v for k, v in enriched.items() if v is not None}
                 all_waiting.append(enriched)
 
+    columns = getattr(args, "_columns", None)
+    csv_mode = getattr(args, "csv", False)
+
     if mode == "all":
         _output_all_waiting(all_waiting, args.jsonl)
     else:
         _output_sessions(
             sessions, args.jsonl, without_dead, sources, args.no_stats,
+            columns=columns, csv_mode=csv_mode,
         )
 
 
@@ -380,12 +540,119 @@ def _state_sort_key(state: str) -> int:
     return STATE_ORDER.get(state, 4)
 
 
+def parse_columns(spec: str) -> list[str]:
+    """Validate comma-separated column spec against known set.
+
+    Exits with an error if any column is unknown.
+    """
+    cols = [c.strip() for c in spec.split(",") if c.strip()]
+    unknown = [c for c in cols if c not in KNOWN_COLUMNS]
+    if unknown:
+        print(
+            f"Error: unknown column(s): {', '.join(unknown)}\n"
+            f"Available: {', '.join(sorted(KNOWN_COLUMNS))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return cols
+
+
+def record_get_col(record: dict, col: str) -> str:
+    """Resolve a column value from a record, including virtual columns."""
+    if col == "ago":
+        return time_ago(record.get("_ts", ""))
+    val = record.get(col, "")
+    if isinstance(val, bool):
+        return str(val).lower()
+    return str(val) if val is not None else ""
+
+
+# Column display widths for table mode (min width, max/truncate width)
+_COL_WIDTHS: dict[str, tuple[int, int]] = {
+    "state": (8, 20),
+    "ago": (8, 12),
+    "project": (10, 35),
+    "reason": (10, 35),
+    "session_id": (12, 12),
+    "cwd": (10, 60),
+    "start_cwd": (10, 60),
+    "tmux_session": (8, 20),
+    "tmux_window": (6, 6),
+    "tmux_pane": (5, 5),
+    "tmux_cwd": (10, 60),
+    "tmux_target": (10, 20),
+}
+
+
+def _render_table(records: list[dict], columns: list[str]) -> None:
+    """Render records as a formatted table to stdout."""
+    # Compute column widths: max of header and data, clamped to configured limits
+    col_widths: dict[str, int] = {}
+    for col in columns:
+        min_w, max_w = _COL_WIDTHS.get(col, (8, 30))
+        data_w = max((len(record_get_col(r, col)) for r in records), default=0)
+        header_w = len(col.upper())
+        col_widths[col] = max(min(max(data_w, header_w), max_w), min_w)
+
+    # Header
+    hdr_parts = []
+    sep_parts = []
+    for col in columns:
+        w = col_widths[col]
+        if col == "ago":
+            hdr_parts.append(f"{col.upper():>{w}}")
+            sep_parts.append(f"{'---':>{w}}")
+        else:
+            hdr_parts.append(f"{col.upper():<{w}}")
+            sep_parts.append(f"{'-' * min(len(col), w):<{w}}")
+    print("  ".join(hdr_parts))
+    print("  ".join(sep_parts))
+
+    # Rows
+    for r in records:
+        row_parts = []
+        for col in columns:
+            w = col_widths[col]
+            val = record_get_col(r, col)
+            # Truncate
+            if len(val) > w:
+                if col in ("cwd", "start_cwd", "tmux_cwd", "project"):
+                    val = "..." + val[-(w - 3):]
+                else:
+                    val = val[:w - 3] + "..."
+            if col == "ago":
+                row_parts.append(f"{val:>{w}}")
+            elif col == "session_id":
+                row_parts.append(f"{val[:w]:<{w}}")
+            else:
+                row_parts.append(f"{val:<{w}}")
+        print("  ".join(row_parts))
+
+
+def _output_csv(records: list[dict], columns: list[str]) -> None:
+    """Output records as CSV to stdout."""
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for r in records:
+        row = {col: record_get_col(r, col) for col in columns}
+        writer.writerow(row)
+    sys.stdout.write(buf.getvalue())
+
+
 def _output_sessions(
     sessions: dict[str, dict], jsonl: bool, without_dead: bool,
     sources: list[Path] | None, no_stats: bool,
+    columns: list[str] | None = None, csv_mode: bool = False,
 ) -> None:
     """Output sessions with rich state, grouped by state category."""
-    live_cwds = get_live_claude_cwds()
+    # Get PID→CWD map (used for both liveness and tmux correlation)
+    pid_cwd_map = get_claude_pid_cwd_map()
+    live_cwds = set(pid_cwd_map.values())
+
+    # Tmux correlation (graceful: empty if tmux unavailable)
+    pane_map = get_tmux_pane_map()
+    tmux_for_claude = build_tmux_for_claude(pid_cwd_map, pane_map)
 
     # Build output records with derived state
     records: list[dict] = []
@@ -404,7 +671,7 @@ def _output_sessions(
         reason = state_reason(ev, state)
         alive = state != "DEAD"
 
-        record = {
+        record: dict = {
             "_ts": ts,
             "session_id": sid,
             "state": state,
@@ -412,9 +679,21 @@ def _output_sessions(
             "match": match_method,
             "reason": reason,
             "cwd": cwd,
+            "start_cwd": rec.get("start_cwd", ""),
             "project": project_name(cwd),
             "_version": VERSION,
         }
+
+        # Tmux correlation: find the claude PID for this session
+        matched_pid = match_session_to_claude_pid(rec, pid_cwd_map)
+        if matched_pid and matched_pid in tmux_for_claude:
+            ti = tmux_for_claude[matched_pid]
+            record["tmux_session"] = ti.session_name
+            record["tmux_window"] = ti.window_index
+            record["tmux_pane"] = ti.pane_index
+            record["tmux_cwd"] = ti.pane_cwd
+            record["tmux_target"] = ti.target
+
         records.append(record)
 
     if not records:
@@ -429,6 +708,10 @@ def _output_sessions(
     if jsonl:
         for rec in records:
             print(json.dumps(rec, separators=(",", ":")))
+        return
+
+    if csv_mode:
+        _output_csv(records, columns or DEFAULT_TABLE_COLUMNS)
         return
 
     # Single-line summary: counts + source files + timing + version
@@ -453,27 +736,8 @@ def _output_sessions(
     match_summary = ", ".join(f"{v} {k}" for k, v in match_counts.items())
     print(f"  liveness: {match_summary}", file=sys.stderr)
 
-    # Table output
-    # Determine state column width (RUN:toolname can be long)
-    max_state = max(len(r["state"]) for r in records)
-    state_w = max(max_state, 8)
-
-    hdr = f"{'STATE':<{state_w}}  {'AGO':>10}  {'PROJECT':<35}  {'REASON / DETAIL':<35}  SESSION_ID"
-    sep = f"{'-----':<{state_w}}  {'---':>10}  {'-------':<35}  {'---------------':<35}  ----------"
-    print(hdr)
-    print(sep)
-    for r in records:
-        ago = time_ago(r["_ts"])
-        proj = r["project"]
-        reason = r["reason"]
-        sid = r["session_id"]
-        state = r["state"]
-        # Truncate long fields
-        if len(proj) > 35:
-            proj = "..." + proj[-32:]
-        if len(reason) > 35:
-            reason = reason[:32] + "..."
-        print(f"{state:<{state_w}}  {ago:>10}  {proj:<35}  {reason:<35}  {sid[:12]}")
+    # Table output via column-aware renderer
+    _render_table(records, columns or DEFAULT_TABLE_COLUMNS)
 
 
 def _ts_sortval(ts_str: str) -> float:
@@ -498,6 +762,8 @@ def parse_args() -> argparse.Namespace:
             "  %(prog)s --waiting                             # all session states\n"
             "  %(prog)s --waiting --without-dead              # exclude dead sessions\n"
             "  %(prog)s --waiting=all --jsonl | jq '.reason'  # all wait history\n"
+            "  %(prog)s --waiting --columns state,ago,tmux_target  # custom columns\n"
+            "  %(prog)s --waiting --csv --columns state,project   # CSV export\n"
             "  %(prog)s --jsonl | jq -r '._event' | sort -u  # list event types\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -560,6 +826,19 @@ def parse_args() -> argparse.Namespace:
         "--no-stats",
         action="store_true",
         help="Suppress timing stats printed to stderr on exit.",
+    )
+    parser.add_argument(
+        "--columns",
+        metavar="COLS",
+        help="Comma-separated list of columns to display. "
+        f"Default for --waiting: {','.join(DEFAULT_TABLE_COLUMNS)}. "
+        f"Available (--waiting mode): {', '.join(sorted(KNOWN_COLUMNS))}. "
+        "In filter mode, selects keys from raw event JSON.",
+    )
+    parser.add_argument(
+        "--csv",
+        action="store_true",
+        help="Output CSV (requires --waiting).",
     )
     return parser.parse_args()
 
@@ -634,6 +913,22 @@ def resolve_sources(args: argparse.Namespace) -> list[Path] | None:
 
 def main() -> None:
     args = parse_args()
+
+    # Validate --csv requires --waiting
+    if args.csv and args.waiting is None:
+        print("Error: --csv requires --waiting", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse --columns (store as _columns to avoid argparse conflict)
+    # In --waiting mode, validate against known columns; in filter mode, accept any keys
+    if args.columns:
+        if args.waiting is not None:
+            args._columns = parse_columns(args.columns)
+        else:
+            args._columns = [c.strip() for c in args.columns.split(",") if c.strip()]
+    else:
+        args._columns = None
+
     sources = resolve_sources(args)
 
     # --waiting mode: separate code path
@@ -656,6 +951,9 @@ def main() -> None:
             continue
         if not matches(event, args):
             continue
+        # --columns in filter mode: select specific keys
+        if args._columns:
+            event = {k: event[k] for k in args._columns if k in event}
         if use_tail:
             tail.append(event)
         else:

@@ -66,6 +66,28 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 ./scripts/query-hooks.py --waiting --jsonl | jq 'select(.alive)'
 ```
 
+### Live monitoring with watch
+
+```bash
+watch -n 2 ./scripts/query-hooks.py --waiting
+```
+
+### Custom columns (with tmux info)
+
+```bash
+# Show tmux target alongside state
+./scripts/query-hooks.py --waiting --columns state,ago,tmux_target,project,session_id
+
+# All tmux details
+./scripts/query-hooks.py --waiting --columns state,ago,tmux_session,tmux_window,tmux_pane,tmux_cwd
+```
+
+### CSV export
+
+```bash
+./scripts/query-hooks.py --waiting --csv --columns state,session_id,project,tmux_target
+```
+
 ### Filter by event type
 
 ```bash
@@ -129,6 +151,8 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 | `--session ID` | Filter by session_id (prefix match) |
 | `-f PATH` | Explicit log file(s). Repeatable. Default: `*.log` in `/tmp/claude/observatory/` |
 | `-n N` | Show only the last N matching events |
+| `--columns COLS` | Comma-separated column list. In `--waiting`: validated against known set. In filter: selects raw event keys |
+| `--csv` | CSV output (requires `--waiting`) |
 
 ## JSONL output fields (--waiting)
 
@@ -141,6 +165,13 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 | `session_id` | Full session ID |
 | `_ts` | Timestamp of last tracked event |
 | `cwd` | Full working directory path |
+| `start_cwd` | CWD from SessionStart event |
+| `match` | Liveness match method (e.g. `exact:start`, `ancestor:last`) |
+| `tmux_session` | Tmux session name (omitted if not in tmux) |
+| `tmux_window` | Tmux window index |
+| `tmux_pane` | Tmux pane index |
+| `tmux_cwd` | Tmux pane's current working directory |
+| `tmux_target` | Tmux target spec (e.g. `main:2.0`) |
 
 ## Input sources (priority order)
 
@@ -150,12 +181,12 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 
 ## Known limitation: false DEAD sessions
 
-Liveness detection compares the session's CWD (from hook events) against running `claude` processes' CWD (from `/proc`). This uses **exact string match**, which can produce false DEAD results when:
+Liveness detection uses 4-layer CWD matching (exact + path ancestry on both start and latest CWDs). False DEAD results can still occur when:
 
-* **CWD drifts mid-session** — Claude Code's hook events may report a subdirectory the session navigated into, while the process CWD stays at the launch directory. Example: process at `/home/user/project`, hooks report `/home/user/project/src/submodule`.
-* **`claude -r` resume** — Resuming from a parent directory means the process CWD is the parent, but hooks report the original project path.
+* **Two sessions, same CWD** — if one is dead and the other alive, both appear alive (false positive for the dead one)
+* **Deeply nested CWD drift** — rare edge cases where neither exact nor ancestry matching connects the hook CWD to the process CWD
 
-A session that is alive but shows as DEAD is a false negative — it errs on the side of reporting DEAD rather than falsely claiming alive. See `query-hooks.DEV_NOTES.md` for proposed improvements (path ancestry matching, SessionStart CWD tracking, Claude project directory lookup).
+See `query-hooks.DEV_NOTES.md` for full details on the liveness detection layers.
 
 ## Output streams
 

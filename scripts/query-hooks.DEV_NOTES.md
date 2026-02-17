@@ -175,13 +175,66 @@ Project dir name → encodes /home/gw-t490/d/26Q1/de (the process CWD)
 | Handles `claude -r` resumes | Encoding is lossy (dashes ambiguous) — need to match, not decode |
 | | Adds I/O (scanning project dirs) |
 
-#### Method E: tmux session correlation
+#### Method E: tmux session correlation (implemented in v0.5.0)
 
-Correlate tmux session → pane CWD → PID via `tmux list-panes -a -F '#{pane_pid} #{pane_current_path}'`.
+Links each Claude session to its tmux pane by walking the process ancestor chain from the claude PID up to the pane's shell PID.
+
+**Data flow:**
+
+```
+tmux list-panes -a -F '#{pane_pid} ...'  →  {shell_pid: TmuxInfo}
+/proc/<pid>/comm == "claude"             →  {claude_pid: cwd}
+Walk claude_pid → parent → ... (max 15)  →  {claude_pid: TmuxInfo}
+CWD-match session record → claude_pid    →  session gets tmux fields
+```
+
+**Functions:**
+
+| Function | Purpose |
+|---|---|
+| `get_claude_pid_cwd_map()` | Returns `{pid: cwd}` for all claude processes (replaces CWD-only set) |
+| `get_proc_ppid(pid)` | Read parent PID from `/proc/<pid>/stat` |
+| `get_tmux_pane_map()` | Parse `tmux list-panes -a` → `{shell_pid: TmuxInfo}` |
+| `build_tmux_for_claude(pids, pane_map)` | Walk ancestor chain to link claude PIDs to tmux panes |
+| `match_session_to_claude_pid(rec, pid_map)` | CWD-match a session record to a claude PID |
+
+**Fields added to session records** (omitted when not in tmux):
+
+* `tmux_session` — tmux session name
+* `tmux_window` — window index
+* `tmux_pane` — pane index
+* `tmux_cwd` — pane's current working directory
+* `tmux_target` — tmux target spec (e.g. `main:2.0`)
+
+**Graceful degradation:** `FileNotFoundError` from missing tmux binary → empty pane map → no tmux fields. No errors printed.
 
 | Pro | Con |
 |-----|-----|
-| Direct PID-to-CWD mapping | Not all users use tmux; not portable |
+| Direct PID-to-pane mapping | Not all users use tmux |
+| Rich context (session name, window, pane) | Adds subprocess call overhead (~5ms) |
+| Ancestor walk handles intermediate shells | Max 15 hops may miss deeply nested processes |
+
+### Custom columns (`--columns`, `--csv`) — added in v0.5.0
+
+**`--columns=col1,col2,...`** selects which fields appear in output. Behavior differs by mode:
+
+* **`--waiting` mode:** validates against `KNOWN_COLUMNS` set. Unknown columns → error with list of available columns. Virtual column `ago` is computed from `_ts`.
+* **Filter mode:** accepts any column names (no validation) — selects keys from raw event JSON.
+
+**`--csv`** outputs CSV via `csv.DictWriter`. Requires `--waiting`.
+
+**Architecture:**
+
+```
+parse_columns(spec)       →  validate & split comma-separated spec
+record_get_col(rec, col)  →  resolve value (handles virtual cols like "ago")
+_render_table(recs, cols) →  column-aware table with auto-width
+_output_csv(recs, cols)   →  CSV via DictWriter
+```
+
+**Default columns** (when `--columns` not specified): `state, ago, project, reason, session_id` — unchanged from pre-0.5.0 table layout.
+
+**Column width computation:** each column has a `(min_width, max_width)` tuple in `_COL_WIDTHS`. Actual width = `max(min(max(data_width, header_width), max_width), min_width)`. Paths are truncated with leading `...`.
 
 ### Known limitations
 
