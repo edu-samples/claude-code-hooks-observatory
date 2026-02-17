@@ -52,5 +52,11 @@ hooks.jsonl
 *.bak-*
 *.sock
 
-# Claude local settings (user-specific, not for sharing)
-.claude/settings.local.json
+# Claude Code local data (user-specific, not for sharing)
+.claude/
+
+# uv lock file (generated, not needed for --script usage)
+uv.lock
+
+# Transient log files
+logfile.log
