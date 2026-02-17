@@ -61,7 +61,7 @@ from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -100,8 +100,10 @@ COLUMN_DESCRIPTIONS: dict[str, str] = {
                     "Derived from last tracked hook event + /proc liveness check.",
     "ago":          "Human-readable time since last event (e.g. '5m ago'). "
                     "Virtual column computed from _ts.",
-    "project":      "Short project name from last 2 path components of cwd "
-                    "(e.g. 'edu-samples/claude-code-hooks-observatory').",
+    "project":      "Short project name derived from git root (preferred) or path. "
+                    "Walks upward from start_cwd (or cwd) looking for .git, then takes "
+                    "last 2 components (e.g. 'edu-samples/claude-code-hooks-observatory'). "
+                    "Falls back to last 2 components of the raw path if no git root found.",
     "reason":       "Human-readable detail for current state "
                     "(e.g. 'running: Bash', 'permission needed: Write').",
     "session_id":   "Claude Code session UUID. Unique per session, persists across "
@@ -283,12 +285,63 @@ def state_reason(ev: dict | None, state: str) -> str:
     return etype
 
 
-def project_name(cwd: str) -> str:
-    """Extract a short project name from cwd path."""
-    if not cwd:
+_git_root_cache: dict[str, str | None] = {}
+
+
+def _find_git_root(path: str) -> str | None:
+    """Walk upward from path looking for a .git directory (or file, for worktrees).
+
+    Returns the directory containing .git, or None if not found.
+    Caches results (including intermediate paths) to avoid repeated filesystem walks.
+    """
+    if path in _git_root_cache:
+        return _git_root_cache[path]
+
+    walked: list[str] = []
+    current = Path(path)
+
+    for _ in range(20):
+        s = str(current)
+        if s in _git_root_cache:
+            result = _git_root_cache[s]
+            for p in walked:
+                _git_root_cache[p] = result
+            _git_root_cache[path] = result
+            return result
+
+        walked.append(s)
+        if (current / ".git").exists():
+            result = s
+            for p in walked:
+                _git_root_cache[p] = result
+            _git_root_cache[path] = result
+            return result
+
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    # No git root found — cache negative result for all walked paths
+    for p in walked:
+        _git_root_cache[p] = None
+    _git_root_cache[path] = None
+    return None
+
+
+def project_name(path: str) -> str:
+    """Extract a short project name, preferring git root over raw path.
+
+    Fallback chain:
+      1. Git root — find .git upward, take last 2 components of git root
+      2. Last 2 path components of the input path
+      3. "?" if no path available
+    """
+    if not path:
         return "?"
-    parts = Path(cwd).parts
-    # Use last 1-2 meaningful path components
+    git_root = _find_git_root(path)
+    base = git_root or path
+    parts = Path(base).parts
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return parts[-1] if parts else "?"
@@ -713,7 +766,7 @@ def _output_sessions(
             "reason": reason,
             "cwd": cwd,
             "start_cwd": rec.get("start_cwd", ""),
-            "project": project_name(cwd),
+            "project": project_name(rec.get("start_cwd", "") or cwd),
             "_version": VERSION,
         }
 

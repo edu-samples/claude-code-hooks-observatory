@@ -74,7 +74,11 @@ All variants log to `/tmp/claude/observatory/` when run via `run-with-tee-logrot
 
 ```bash
 # Which sessions are waiting for user input right now?
+# Shows ALIVE/dead status by cross-referencing Stop events and /proc
 ./scripts/query-hooks.py --waiting
+
+# Only alive sessions (filter out dead)
+./scripts/query-hooks.py --waiting --jsonl | jq 'select(.alive)'
 
 # Full waiting history as JSONL (pipe to jq for analysis)
 ./scripts/query-hooks.py --waiting=all --jsonl | jq -r '.reason' | sort | uniq -c | sort -rn
@@ -91,6 +95,13 @@ All variants log to `/tmp/claude/observatory/` when run via `run-with-tee-logrot
 # Extract just the commands being run
 ./scripts/query-hooks.py PreToolUse --tool Bash --jsonl | jq -r '.tool_input.command'
 ```
+
+The `--waiting` flag detects dead sessions using two complementary methods:
+
+* **Stop/SessionEnd events** — filters sessions that exited cleanly
+* **/proc cross-reference** (Linux) — catches crashes, `kill -9`, or closed terminals that never emitted a Stop event
+
+Output includes an `ALIVE`/`dead` tag and an `"alive"` boolean field in JSONL mode.
 
 See `./scripts/query-hooks.py --help` for all options (`--tool`, `--session`, `--last`, `--file`, `--waiting`).
 
