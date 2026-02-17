@@ -23,8 +23,14 @@ Examples:
     # Filter by tool name
     ./scripts/query-hooks.py PreToolUse --tool Bash
 
-    # Which sessions are waiting for user input right now?
+    # Session states: FRESH, PERMIT, QUESTION, IDLE, RUN:*, DEAD
     ./scripts/query-hooks.py --waiting
+
+    # Exclude dead sessions
+    ./scripts/query-hooks.py --waiting --without-dead
+
+    # Filter running sessions via JSONL
+    ./scripts/query-hooks.py --waiting --jsonl | jq 'select(.state | startswith("RUN"))'
 
     # All historical waiting events as JSONL
     ./scripts/query-hooks.py --waiting=all --jsonl | jq '.reason'
@@ -36,44 +42,109 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+_T0 = time.monotonic()
+
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
-# Events and notification types that signal "waiting for user input"
-WAITING_EVENTS = {"PermissionRequest", "Notification"}
+# Events we track for state derivation (all meaningful hook events)
+TRACKED_EVENTS = {
+    "Stop", "PermissionRequest", "Notification",
+    "PreToolUse", "PostToolUse", "PostToolUseFailure",
+    "UserPromptSubmit", "SubagentStart", "SubagentStop",
+    "SessionEnd",
+}
+
+# Notification types relevant to session state
 WAITING_NOTIFICATION_TYPES = {"permission_prompt", "idle_prompt", "elicitation_dialog"}
 
-# Events that signal a session is actively working (clears "waiting" state)
-ACTIVE_EVENTS = {
-    "PreToolUse", "PostToolUse", "PostToolUseFailure",
-    "UserPromptSubmit", "SubagentStart",
+# Display order for state groups (lower = shown first)
+STATE_ORDER = {
+    "FRESH": 0, "PERMIT": 1, "QUESTION": 2, "IDLE": 3,
+    # RUN:* states all get order 4 (see _state_sort_key)
+    "DEAD": 5,
 }
 
 
-def is_waiting_event(event: dict) -> bool:
-    """Does this event indicate a session needs user attention?"""
-    etype = event.get("_event", "")
-    if etype == "PermissionRequest":
-        return True
-    if etype == "Notification":
-        return event.get("notification_type") in WAITING_NOTIFICATION_TYPES
-    return False
+def session_state(rec: dict, live_cwds: set[str]) -> str:
+    """Derive display state from a session's last event.
+
+    States (in display order):
+      FRESH    — just finished a turn, waiting for input (<60s)
+      PERMIT   — needs user to approve a tool
+      QUESTION — Claude is asking the user something
+      IDLE     — waiting for input (60s+ elapsed)
+      RUN:tool — executing a tool (tool name shown)
+      RUN:think — processing user prompt
+      RUN:agent — subagent active
+      RUN:done  — between tools (thinking)
+      DEAD     — process exited without SessionEnd
+    """
+    if rec["terminated"]:
+        return "TERMINATED"
+
+    ev = rec["last_event"]
+    if ev is None:
+        return "DEAD" if rec["cwd"] not in live_cwds else "RUN:?"
+
+    etype = ev.get("_event", "")
+
+    # Waiting states
+    if etype == "Stop":
+        state = "FRESH"
+    elif etype == "PermissionRequest":
+        state = "PERMIT"
+    elif etype == "Notification":
+        ntype = ev.get("notification_type", "")
+        if ntype == "idle_prompt":
+            state = "IDLE"
+        elif ntype == "permission_prompt":
+            state = "PERMIT"
+        elif ntype == "elicitation_dialog":
+            state = "QUESTION"
+        else:
+            state = "IDLE"  # unknown notification → treat as idle
+    # Running states
+    elif etype == "PreToolUse":
+        tool = ev.get("tool_name", "?")
+        state = f"RUN:{tool}"
+    elif etype == "UserPromptSubmit":
+        state = "RUN:think"
+    elif etype == "SubagentStart":
+        state = "RUN:agent"
+    elif etype in ("PostToolUse", "PostToolUseFailure", "SubagentStop"):
+        state = "RUN:done"
+    else:
+        state = "RUN:?"
+
+    # Override: any state + dead process → DEAD
+    if rec["cwd"] not in live_cwds:
+        return "DEAD"
+
+    return state
 
 
-def waiting_reason(event: dict) -> str:
-    """Human-readable reason why the session is waiting."""
-    etype = event.get("_event", "")
+def state_reason(ev: dict | None, state: str) -> str:
+    """Human-readable reason/detail for the session's current state."""
+    if ev is None:
+        return "no events recorded"
+
+    etype = ev.get("_event", "")
+    if etype == "Stop":
+        return "waiting for input"
     if etype == "PermissionRequest":
-        tool = event.get("tool_name", "?")
+        tool = ev.get("tool_name", "?")
         return f"permission needed: {tool}"
     if etype == "Notification":
-        ntype = event.get("notification_type", "")
-        msg = event.get("message", "")
+        ntype = ev.get("notification_type", "")
+        msg = ev.get("message", "")
         match ntype:
             case "idle_prompt":
                 return "idle — waiting for input"
@@ -83,6 +154,18 @@ def waiting_reason(event: dict) -> str:
                 return msg or "question for user"
             case _:
                 return msg or ntype
+    if etype == "PreToolUse":
+        tool = ev.get("tool_name", "?")
+        return f"running: {tool}"
+    if etype == "UserPromptSubmit":
+        return "processing prompt"
+    if etype == "SubagentStart":
+        return "subagent active"
+    if etype in ("PostToolUse", "PostToolUseFailure"):
+        tool = ev.get("tool_name", "?")
+        return f"finished: {tool}"
+    if etype == "SubagentStop":
+        return "subagent finished"
     return etype
 
 
@@ -119,11 +202,49 @@ def time_ago(ts_str: str) -> str:
         return "?"
 
 
-def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
-    """Handle --waiting mode: find sessions needing user attention."""
-    mode = args.waiting  # "recent" or "all"
+def get_live_claude_cwds() -> set[str]:
+    """Get working directories of all running claude processes via /proc.
 
-    # Per-session tracking: {session_id: {last_wait_event, last_active_ts, ...}}
+    On Linux, reads /proc/<pid>/cwd symlinks for processes named 'claude'.
+    Falls back to empty set on non-Linux or permission errors.
+    """
+    cwds: set[str] = set()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return cwds
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            comm = (pid_dir / "comm").read_text().strip()
+            if comm != "claude":
+                continue
+            cwd = os.readlink(pid_dir / "cwd")
+            cwds.add(cwd)
+        except (OSError, PermissionError):
+            continue
+    return cwds
+
+
+def _is_tracked_event(event: dict) -> bool:
+    """Is this an event we track for session state?
+
+    For Notification events, only track relevant notification types.
+    """
+    etype = event.get("_event", "")
+    if etype not in TRACKED_EVENTS:
+        return False
+    if etype == "Notification":
+        return event.get("notification_type") in WAITING_NOTIFICATION_TYPES
+    return True
+
+
+def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
+    """Handle --waiting mode: show session states."""
+    mode = args.waiting  # "recent" or "all"
+    without_dead = getattr(args, "without_dead", False)
+
+    # Per-session tracking
     sessions: dict[str, dict] = {}
     all_waiting: list[dict] = []
 
@@ -146,8 +267,9 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
         # Initialize session record
         if sid not in sessions:
             sessions[sid] = {
-                "last_wait": None,
-                "last_active_ts": "",
+                "last_event": None,
+                "last_event_type": "",
+                "terminated": False,
                 "cwd": event.get("cwd", ""),
             }
 
@@ -156,31 +278,34 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
         if event.get("cwd"):
             rec["cwd"] = event["cwd"]
 
-        if is_waiting_event(event):
-            enriched = {
-                "_ts": ts,
-                "_event": etype,
-                "session_id": sid,
-                "reason": waiting_reason(event),
-                "cwd": event.get("cwd", ""),
-                "project": project_name(event.get("cwd", "")),
-                "tool_name": event.get("tool_name"),
-                "notification_type": event.get("notification_type"),
-                "message": event.get("message"),
-            }
-            # Remove None values for cleaner output
-            enriched = {k: v for k, v in enriched.items() if v is not None}
-            rec["last_wait"] = enriched
-            rec["last_active_ts"] = ""  # reset: now waiting
-            if mode == "all":
+        if etype == "SessionEnd":
+            rec["terminated"] = True
+            rec["last_event"] = event
+            rec["last_event_type"] = etype
+        elif _is_tracked_event(event):
+            rec["last_event"] = event
+            rec["last_event_type"] = etype
+
+            # For --waiting=all mode, collect waiting events
+            if mode == "all" and etype in ("Stop", "PermissionRequest", "Notification"):
+                enriched = {
+                    "_ts": ts,
+                    "_event": etype,
+                    "session_id": sid,
+                    "reason": state_reason(event, ""),
+                    "cwd": event.get("cwd", ""),
+                    "project": project_name(event.get("cwd", "")),
+                    "tool_name": event.get("tool_name"),
+                    "notification_type": event.get("notification_type"),
+                    "message": event.get("message"),
+                }
+                enriched = {k: v for k, v in enriched.items() if v is not None}
                 all_waiting.append(enriched)
-        elif etype in ACTIVE_EVENTS:
-            rec["last_active_ts"] = ts  # session resumed work
 
     if mode == "all":
         _output_all_waiting(all_waiting, args.jsonl)
     else:
-        _output_recent_waiting(sessions, args.jsonl)
+        _output_sessions(sessions, args.jsonl, without_dead)
 
 
 def _output_all_waiting(events: list[dict], jsonl: bool) -> None:
@@ -195,47 +320,101 @@ def _output_all_waiting(events: list[dict], jsonl: bool) -> None:
             print(json.dumps(ev, indent=2))
 
 
-def _output_recent_waiting(
-    sessions: dict[str, dict], jsonl: bool
+def _state_sort_key(state: str) -> int:
+    """Sort key for state grouping. RUN:* states all sort together at position 4."""
+    if state.startswith("RUN:"):
+        return 4
+    return STATE_ORDER.get(state, 4)
+
+
+def _output_sessions(
+    sessions: dict[str, dict], jsonl: bool, without_dead: bool
 ) -> None:
-    """Output sessions currently waiting (last signal is a wait, not resumed)."""
-    waiting = []
+    """Output sessions with rich state, grouped by state category."""
+    live_cwds = get_live_claude_cwds()
+
+    # Build output records with derived state
+    records: list[dict] = []
     for sid, rec in sessions.items():
-        w = rec["last_wait"]
-        if w is None:
+        state = session_state(rec, live_cwds)
+        # Skip terminated sessions entirely
+        if state == "TERMINATED":
             continue
-        # If session had activity AFTER the wait event, it's no longer waiting
-        wait_ts = w.get("_ts", "")
-        if rec["last_active_ts"] and rec["last_active_ts"] > wait_ts:
+        # Skip dead if --without-dead
+        if without_dead and state == "DEAD":
             continue
-        waiting.append(w)
 
-    # Sort by timestamp descending (most recent wait first)
-    waiting.sort(key=lambda e: e.get("_ts", ""), reverse=True)
+        ev = rec["last_event"]
+        ts = ev.get("_ts", "") if ev else ""
+        cwd = rec["cwd"]
+        reason = state_reason(ev, state)
+        alive = state != "DEAD"
 
-    if not waiting:
-        print("No sessions currently waiting for input.", file=sys.stderr)
+        record = {
+            "_ts": ts,
+            "session_id": sid,
+            "state": state,
+            "alive": alive,
+            "reason": reason,
+            "cwd": cwd,
+            "project": project_name(cwd),
+        }
+        records.append(record)
+
+    if not records:
+        print("No active sessions found.", file=sys.stderr)
         return
+
+    # Sort: by state group, then by timestamp descending within each group
+    records.sort(key=lambda r: (_state_sort_key(r["state"]), -(
+        _ts_sortval(r["_ts"])
+    )))
 
     if jsonl:
-        for ev in waiting:
-            print(json.dumps(ev, separators=(",", ":")))
+        for rec in records:
+            print(json.dumps(rec, separators=(",", ":")))
         return
 
-    # Human-readable table
-    print(f"{'AGO':>10}  {'PROJECT':<40}  {'REASON':<40}  SESSION_ID")
-    print(f"{'---':>10}  {'-------':<40}  {'------':<40}  ----------")
-    for ev in waiting:
-        ago = time_ago(ev.get("_ts", ""))
-        proj = ev.get("project", "?")
-        reason = ev.get("reason", "?")
-        sid = ev.get("session_id", "?")
+    # Summary counts
+    counts: dict[str, int] = {}
+    for r in records:
+        group = r["state"] if not r["state"].startswith("RUN:") else "RUN"
+        counts[group] = counts.get(group, 0) + 1
+    summary_parts = [f"{v} {k}" for k, v in counts.items()]
+    print(f"{', '.join(summary_parts)} ({len(records)} total)", file=sys.stderr)
+
+    # Table output
+    # Determine state column width (RUN:toolname can be long)
+    max_state = max(len(r["state"]) for r in records)
+    state_w = max(max_state, 8)
+
+    hdr = f"{'STATE':<{state_w}}  {'AGO':>10}  {'PROJECT':<35}  {'REASON / DETAIL':<35}  SESSION_ID"
+    sep = f"{'-----':<{state_w}}  {'---':>10}  {'-------':<35}  {'---------------':<35}  ----------"
+    print(hdr)
+    print(sep)
+    for r in records:
+        ago = time_ago(r["_ts"])
+        proj = r["project"]
+        reason = r["reason"]
+        sid = r["session_id"]
+        state = r["state"]
         # Truncate long fields
-        if len(proj) > 40:
-            proj = "..." + proj[-37:]
-        if len(reason) > 40:
-            reason = reason[:37] + "..."
-        print(f"{ago:>10}  {proj:<40}  {reason:<40}  {sid[:12]}")
+        if len(proj) > 35:
+            proj = "..." + proj[-32:]
+        if len(reason) > 35:
+            reason = reason[:32] + "..."
+        print(f"{state:<{state_w}}  {ago:>10}  {proj:<35}  {reason:<35}  {sid[:12]}")
+
+
+def _ts_sortval(ts_str: str) -> float:
+    """Convert timestamp to float for sorting. Returns 0.0 on parse failure."""
+    try:
+        ts = datetime.fromisoformat(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -243,11 +422,12 @@ def parse_args() -> argparse.Namespace:
         description="Query observatory logs by hook event type.",
         epilog=(
             "Examples:\n"
-            "  %(prog)s PreToolUse                        # human-readable output\n"
-            "  %(prog)s PreToolUse --jsonl | jq '.'        # JSONL for piping\n"
-            "  %(prog)s PreToolUse --tool Bash --jsonl      # Bash events as JSONL\n"
-            "  %(prog)s --waiting                           # sessions needing input now\n"
-            "  %(prog)s --waiting=all --jsonl | jq '.reason' # all wait history\n"
+            "  %(prog)s PreToolUse                          # human-readable output\n"
+            "  %(prog)s PreToolUse --jsonl | jq '.'          # JSONL for piping\n"
+            "  %(prog)s PreToolUse --tool Bash --jsonl        # Bash events as JSONL\n"
+            "  %(prog)s --waiting                             # all session states\n"
+            "  %(prog)s --waiting --without-dead              # exclude dead sessions\n"
+            "  %(prog)s --waiting=all --jsonl | jq '.reason'  # all wait history\n"
             "  %(prog)s --jsonl | jq -r '._event' | sort -u  # list event types\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -296,11 +476,20 @@ def parse_args() -> argparse.Namespace:
         const="recent",
         default=None,
         metavar="MODE",
-        help="Show sessions waiting for user input. "
-        "Modes: 'recent' (default) = currently waiting sessions only; "
+        help="Show session states. "
+        "Modes: 'recent' (default) = current session states; "
         "'all' = every waiting event in history. "
-        "Detects: PermissionRequest, idle_prompt, permission_prompt, "
-        "elicitation_dialog.",
+        "States: FRESH, PERMIT, QUESTION, IDLE, RUN:*, DEAD.",
+    )
+    parser.add_argument(
+        "--without-dead",
+        action="store_true",
+        help="Exclude dead sessions from --waiting output.",
+    )
+    parser.add_argument(
+        "--no-stats",
+        action="store_true",
+        help="Suppress timing stats printed to stderr on exit.",
     )
     return parser.parse_args()
 
@@ -372,6 +561,9 @@ def main() -> None:
     # --waiting mode: separate code path
     if args.waiting is not None:
         run_waiting(args, sources)
+        if not args.no_stats:
+            elapsed = time.monotonic() - _T0
+            print(f"Completed in {elapsed:.3f}s", file=sys.stderr)
         return
 
     # Standard filter mode: parse, filter, output (streaming)
@@ -398,6 +590,10 @@ def main() -> None:
     if use_tail:
         for event in tail:
             print(format_event(event, args.jsonl))
+
+    if not args.no_stats:
+        elapsed = time.monotonic() - _T0
+        print(f"Completed in {elapsed:.3f}s", file=sys.stderr)
 
 
 if __name__ == "__main__":
