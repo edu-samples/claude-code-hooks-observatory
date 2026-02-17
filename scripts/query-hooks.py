@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -565,10 +565,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def discover_log_files() -> list[Path]:
-    """Find all .log files in the default log directory."""
+    """Find all log files in the default log directory.
+
+    Matches both current (*.log) and rotated files (*.log.1, *.log.2, ...).
+    Rotated files are sorted numerically (oldest first) so events are
+    read in chronological order: *.log.10, *.log.9, ..., *.log.1, *.log
+    """
     if not DEFAULT_LOG_DIR.is_dir():
         return []
-    return sorted(DEFAULT_LOG_DIR.glob("*.log"))
+    current = sorted(DEFAULT_LOG_DIR.glob("*.log"))
+    rotated = sorted(
+        DEFAULT_LOG_DIR.glob("*.log.[0-9]*"),
+        key=lambda p: -int(p.suffix.lstrip(".")),  # .10 before .9 before .1
+    )
+    return rotated + current  # oldest rotated first, current last
 
 
 def iter_lines(sources: list[Path] | None) -> Iterator[str]:
