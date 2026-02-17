@@ -740,13 +740,39 @@ def _output_sessions(
     pane_map = get_tmux_pane_map()
     tmux_for_claude = build_tmux_for_claude(pid_cwd_map, pane_map)
 
-    # Build output records with derived state
+    # Build output records with derived state.
+    # 1-to-1 PID matching: sort sessions by recency so the most recent session
+    # in each CWD claims the running PID; older sessions become DEAD.
+    sorted_sids = sorted(
+        sessions.keys(),
+        key=lambda s: _ts_sortval(
+            (sessions[s]["last_event"] or {}).get("_ts", "")
+        ),
+        reverse=True,
+    )
+    claimed_pids: set[int] = set()
     records: list[dict] = []
-    for sid, rec in sessions.items():
-        state, match_method = session_state(rec, live_cwds)
+    for sid in sorted_sids:
+        rec = sessions[sid]
         # Skip terminated sessions entirely
-        if state == "TERMINATED":
+        if rec["terminated"]:
             continue
+
+        # Try to claim a PID for this session (1-to-1).
+        # Build a reduced pid_cwd_map excluding already-claimed PIDs.
+        avail_pid_cwd = {
+            pid: cwd for pid, cwd in pid_cwd_map.items()
+            if pid not in claimed_pids
+        }
+        matched_pid = match_session_to_claude_pid(rec, avail_pid_cwd)
+
+        # Derive state using only unclaimed live CWDs
+        unclaimed_cwds = set(avail_pid_cwd.values())
+        state, match_method = session_state(rec, unclaimed_cwds)
+
+        if matched_pid and state != "DEAD":
+            claimed_pids.add(matched_pid)
+
         # Skip dead if --without-dead
         if without_dead and state == "DEAD":
             continue
@@ -770,8 +796,7 @@ def _output_sessions(
             "_version": VERSION,
         }
 
-        # Tmux correlation: find the claude PID for this session
-        matched_pid = match_session_to_claude_pid(rec, pid_cwd_map)
+        # Tmux correlation
         if matched_pid and matched_pid in tmux_for_claude:
             ti = tmux_for_claude[matched_pid]
             record["tmux_session"] = ti.session_name
