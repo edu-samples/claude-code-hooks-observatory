@@ -56,6 +56,7 @@ DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
 # Events we track for state derivation (all meaningful hook events)
 TRACKED_EVENTS = {
+    "SessionStart",
     "Stop", "PermissionRequest", "Notification",
     "PreToolUse", "PostToolUse", "PostToolUseFailure",
     "UserPromptSubmit", "SubagentStart", "SubagentStop",
@@ -71,6 +72,40 @@ STATE_ORDER = {
     # RUN:* states all get order 4 (see _state_sort_key)
     "DEAD": 5,
 }
+
+
+def _is_alive(rec: dict, live_cwds: set[str]) -> bool:
+    """Check if a session's process is still running.
+
+    Uses a layered matching strategy against /proc CWDs:
+      1. Exact match on start_cwd (SessionStart CWD = process launch dir)
+      2. Exact match on last_cwd (latest hook CWD)
+      3. Path ancestry: hook CWD is under a live process CWD (or vice versa)
+    """
+    start_cwd = rec.get("start_cwd", "")
+    last_cwd = rec.get("cwd", "")
+
+    # Layer 1: exact match on start CWD (most reliable)
+    if start_cwd and start_cwd in live_cwds:
+        return True
+    # Layer 2: exact match on latest CWD
+    if last_cwd and last_cwd in live_cwds:
+        return True
+    # Layer 3: path ancestry — hook CWD is a subdirectory of a live process CWD
+    for proc_cwd in live_cwds:
+        if start_cwd:
+            try:
+                Path(start_cwd).relative_to(proc_cwd)
+                return True
+            except ValueError:
+                pass
+        if last_cwd and last_cwd != start_cwd:
+            try:
+                Path(last_cwd).relative_to(proc_cwd)
+                return True
+            except ValueError:
+                pass
+    return False
 
 
 def session_state(rec: dict, live_cwds: set[str]) -> str:
@@ -92,7 +127,7 @@ def session_state(rec: dict, live_cwds: set[str]) -> str:
 
     ev = rec["last_event"]
     if ev is None:
-        return "DEAD" if rec["cwd"] not in live_cwds else "RUN:?"
+        return "DEAD" if not _is_alive(rec, live_cwds) else "RUN:?"
 
     etype = ev.get("_event", "")
 
@@ -121,11 +156,13 @@ def session_state(rec: dict, live_cwds: set[str]) -> str:
         state = "RUN:agent"
     elif etype in ("PostToolUse", "PostToolUseFailure", "SubagentStop"):
         state = "RUN:done"
+    elif etype == "SessionStart":
+        state = "RUN:start"
     else:
         state = "RUN:?"
 
     # Override: any state + dead process → DEAD
-    if rec["cwd"] not in live_cwds:
+    if not _is_alive(rec, live_cwds):
         return "DEAD"
 
     return state
@@ -166,6 +203,8 @@ def state_reason(ev: dict | None, state: str) -> str:
         return f"finished: {tool}"
     if etype == "SubagentStop":
         return "subagent finished"
+    if etype == "SessionStart":
+        return "session started (no further events)"
     return etype
 
 
@@ -270,13 +309,17 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
                 "last_event": None,
                 "last_event_type": "",
                 "terminated": False,
-                "cwd": event.get("cwd", ""),
+                "start_cwd": event.get("cwd", ""),  # launch CWD (for /proc matching)
+                "cwd": event.get("cwd", ""),         # latest CWD (for display)
             }
 
         rec = sessions[sid]
-        # Always update cwd to latest
+        # Always update display cwd to latest
         if event.get("cwd"):
             rec["cwd"] = event["cwd"]
+        # Capture start_cwd from SessionStart (most reliable for /proc match)
+        if etype == "SessionStart" and event.get("cwd"):
+            rec["start_cwd"] = event["cwd"]
 
         if etype == "SessionEnd":
             rec["terminated"] = True
