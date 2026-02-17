@@ -69,6 +69,13 @@ Features to consider:
 * Time-based rotation
 * Compression of rotated files
 
+<!-- NOTE: Do NOT use Rust pipe-logger (magiclen/pipe-logger) for log rotation.
+     v1.1.19 has a stdin buffer corruption bug (magiclen/pipe-logger#4) that
+     duplicates/garbles piped lines. Fix submitted as magiclen/pipe-logger#5
+     but not yet merged. Current approach (tee -a + shell-based rotation in
+     run-with-tee-logrotator.sh) works correctly and is the recommended path.
+     Revisit pipe-logger only after upstream merges the fix. -->
+
 ### Web UI Dashboard
 
 Simple HTML dashboard showing live hook stream via WebSocket.
