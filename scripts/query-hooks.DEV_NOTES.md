@@ -105,80 +105,63 @@ For sessions that crashed, were `kill -9`'d, or whose terminal was closed — no
 get_live_claude_cwds()  →  set of CWD paths for running claude processes
 ```
 
-### CWD mismatch problem (current, exact match only)
+### CWD mismatch problem
 
-The current implementation uses **exact CWD string match** between the hook's `cwd` field and `/proc/<pid>/cwd`. This produces false DEAD results in several scenarios:
+Hook events can report a **different CWD than the process's actual CWD** (`/proc/<pid>/cwd`). Observed scenarios:
 
 #### Scenario 1: Hook CWD drifts from process CWD
 
-Claude Code's hook events can report a **different CWD than the process's actual CWD**. Observed: a session launched from `/home/user/d/26Q1/de` (process CWD stays here) starts working in subdirectory `Swiss_Official_Documents/naturalization-knowledge-extraction`, and later hook events report that subdirectory as `cwd`. Since `run_waiting()` updates `rec["cwd"]` to the latest event's CWD, the final recorded CWD no longer matches `/proc/<pid>/cwd`.
+A session launched from `/home/user/project` (process CWD stays here) works in a subdirectory, and later hook events report that subdirectory as `cwd`.
 
 ```
 Process CWD (from /proc):     /home/user/d/26Q1/de
 Hook CWD (from last event):   /home/user/d/26Q1/de/Swiss_Official_Documents/naturalization-knowledge-extraction
-Result:                        exact match fails → falsely marked DEAD
 ```
 
 #### Scenario 2: Two sessions, same process CWD
 
 Multiple sessions started from the same directory. If one is dead and the other alive, the alive process's CWD makes **both** appear alive.
 
-#### Scenario 3: resumed session (`claude -r`)
+#### Scenario 3: Resumed session (`claude -r`)
 
 Session resumed with `claude -r` from a parent directory. The process CWD is the parent, but hook events report the original project subdirectory.
 
-### Possible improvements to liveness detection
+### Layered liveness detection (implemented: Method B + A)
 
-Several approaches, each with different tradeoffs. They can be combined (try in order, first match wins).
+`_liveness_check(rec, live_cwds)` returns the match method used, or `""` if dead. Four layers tried in order (first match wins):
 
-#### Method A: Path ancestry match
-
-Check if either path is a prefix of the other (ancestor/descendant relationship).
-
-```python
-def is_path_related(hook_cwd: str, proc_cwd: str) -> bool:
-    """True if one path is an ancestor of the other."""
-    h = Path(hook_cwd)
-    p = Path(proc_cwd)
-    try:
-        h.relative_to(p)  # hook is under process CWD
-        return True
-    except ValueError:
-        pass
-    try:
-        p.relative_to(h)  # process is under hook CWD (unlikely but possible)
-        return True
-    except ValueError:
-        return False
+```
+Layer   Method          Field        Match type     Covers
+─────   ──────          ─────        ──────────     ──────
+  1     exact:start     start_cwd    exact          Normal sessions (most common)
+  2     exact:last      cwd          exact          Sessions without SessionStart in log
+  3     ancestor:start  start_cwd    path ancestry  claude -r from parent dir
+  4     ancestor:last   cwd          path ancestry  CWD drift into subdirectory (Scenario 1)
 ```
 
-| Pro | Con |
-|-----|-----|
-| Simple, zero dependencies | False positives for unrelated projects sharing a parent |
-| Covers the common case (subdirectory drift) | Doesn't help if CWDs are completely unrelated |
-| Fast (pure string/path comparison) | |
-
-#### Method B: Session-first CWD (use `SessionStart` event CWD)
-
-Track the CWD from the `SessionStart` event separately and use it for `/proc` matching, since the process CWD corresponds to the **launch** directory, not the drifted directory.
+**Per-session CWD tracking:**
 
 ```python
 sessions[sid] = {
-    "start_cwd": cwd,    # from SessionStart, never overwritten
-    "last_cwd": cwd,     # latest from any event (for display)
+    "start_cwd": cwd,    # from SessionStart event, never overwritten (Method B)
+    "cwd": cwd,          # latest from any event (for display + fallback matching)
     ...
 }
 ```
 
-| Pro | Con |
-|-----|-----|
-| Matches the process CWD semantics exactly | Doesn't help if observatory started after session |
-| No false positives from ancestry | Requires SessionStart to be in the log |
-| Still uses exact match | |
+**Path ancestry** (Method A): checks if the hook CWD is a subdirectory of any live process CWD using `Path.relative_to()`. Only checks hook-under-process direction (not reverse), since the common case is the hook CWD drifting deeper.
+
+**Match method reporting:** each JSONL record includes a `"match"` field showing which layer matched (e.g. `"exact:start"`, `"ancestor:last"`). The summary line shows aggregate stats for at-a-glance debugging:
+
+```
+  liveness: 19 exact:start, 2 ancestor:last, 3 dead
+```
+
+### Possible future improvements
 
 #### Method C: Claude project directory lookup
 
-Claude stores sessions in `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl`. The `{encoded-cwd}` is derived from the **process launch CWD** (replacing `/` with `-`). Given a session UUID, find which project directory contains it to recover the original launch CWD.
+Claude stores sessions in `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl`. The `{encoded-cwd}` is derived from the **process launch CWD** (replacing `/` with `-`). Given a session UUID, find which project directory contains it to recover the original launch CWD — even without `SessionStart` in the log.
 
 ```
 Session 1796e25b → found in ~/.claude/projects/-home-gw-t490-d-26Q1-de/
@@ -188,68 +171,29 @@ Project dir name → encodes /home/gw-t490/d/26Q1/de (the process CWD)
 
 | Pro | Con |
 |-----|-----|
-| Recovers the actual launch CWD | Requires filesystem access to `~/.claude/` |
-| Works even without SessionStart in logs | Encoding is lossy (dashes ambiguous) — need to match, not decode |
-| Handles `claude -r` resumes | Adds I/O (scanning project dirs) |
-| No false positives from ancestry | Need to handle `~/.claude/` not existing |
-
-Implementation sketch:
-
-```python
-def session_launch_cwds() -> dict[str, str]:
-    """Map session UUIDs to their launch CWD via Claude's project dir structure."""
-    result = {}
-    projects = Path.home() / ".claude" / "projects"
-    if not projects.is_dir():
-        return result
-    for proj_dir in projects.iterdir():
-        if not proj_dir.is_dir():
-            continue
-        for f in proj_dir.glob("*.jsonl"):
-            sid = f.stem  # UUID is the filename without .jsonl
-            # Encode each live CWD and compare to proj_dir.name
-            result[sid] = proj_dir.name  # store encoded name for matching
-    return result
-```
-
-Then match: encode each `/proc/<pid>/cwd` as `-`-separated path and compare to the project dir name.
-
-#### Method D: Track both start CWD and all process CWDs
-
-Combine methods: use `SessionStart` CWD for `/proc` matching, fall back to path ancestry, fall back to project dir lookup.
-
-```python
-# Priority order for liveness check:
-1. Exact match on start_cwd (Method B)
-2. Exact match on last_cwd (current)
-3. Path ancestry on start_cwd (Method A + B)
-4. Path ancestry on last_cwd (Method A)
-5. Project dir lookup (Method C)
-```
+| Recovers launch CWD without SessionStart | Requires filesystem access to `~/.claude/` |
+| Handles `claude -r` resumes | Encoding is lossy (dashes ambiguous) — need to match, not decode |
+| | Adds I/O (scanning project dirs) |
 
 #### Method E: tmux session correlation
 
-Some users name tmux sessions after projects. Could correlate tmux session → pane CWD → PID.
-
-```bash
-tmux list-panes -a -F '#{pane_pid} #{pane_current_path}'
-```
+Correlate tmux session → pane CWD → PID via `tmux list-panes -a -F '#{pane_pid} #{pane_current_path}'`.
 
 | Pro | Con |
 |-----|-----|
-| Direct PID-to-CWD mapping | Not all users use tmux |
-| Can see pane CWD which may differ from process CWD | Requires `tmux` binary available |
-| | tmux-specific, not portable |
+| Direct PID-to-CWD mapping | Not all users use tmux; not portable |
 
-### Known limitations of /proc matching
+### Known limitations
 
-* **CWD-based, not session-ID-based.** If two sessions share the same CWD, both show as alive if either process is running. This is a best-effort heuristic since Claude Code doesn't expose session IDs via the process table.
+* **CWD-based, not session-ID-based.** If two sessions share the same CWD, both show as alive if either process is running (Scenario 2). Best-effort heuristic since Claude Code doesn't expose session IDs via the process table.
+
+* **Ancestry false positives.** Path ancestry matching can match unrelated sessions that happen to share a parent directory. Mitigated by trying exact match first (layers 1-2) and only falling back to ancestry (layers 3-4) when exact fails.
 
 * **Linux-only.** Falls back to empty set on macOS/other platforms, meaning all sessions show as alive (conservative — no false negatives).
 
 * **Race condition.** A process could exit between the log scan and the `/proc` scan. Unlikely in practice since the log scan takes milliseconds.
 
-* **Hook CWD drifts.** Claude Code's hook events can report a CWD different from the process CWD. The script tracks the latest CWD from events, which may be a subdirectory the session navigated into. See "CWD mismatch problem" above.
+* **Log rotation boundaries.** Sessions that started before a log rotation may only have `SessionStart` (or nothing) in the current log epoch. The script reads rotated files (`*.log.1`, `*.log.2`, ...) in chronological order to reconstruct session lifecycles, but events lost to server restarts cannot be recovered.
 
 ### JSONL backwards compatibility
 
