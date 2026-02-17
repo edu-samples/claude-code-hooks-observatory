@@ -123,6 +123,7 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 | `EVENT [EVENT...]` | Hook event types to include (e.g. `PreToolUse`, `Stop`) |
 | `--waiting[=MODE]` | Session state display. `recent` (default): current states. `all`: full wait history |
 | `--without-dead` | Exclude dead sessions from `--waiting` output |
+| `--no-stats` | Suppress timing stats on stderr |
 | `--jsonl` | Compact JSONL output (default: indented JSON) |
 | `--tool NAME` | Filter by tool_name (e.g. `Bash`, `Read`, `Write`) |
 | `--session ID` | Filter by session_id (prefix match) |
@@ -146,6 +147,15 @@ Sessions with `SessionEnd` are filtered out entirely (terminated cleanly).
 1. `--file` paths (explicit)
 2. Auto-discovered `*.log` files in `/tmp/claude/observatory/`
 3. stdin (if piped)
+
+## Known limitation: false DEAD sessions
+
+Liveness detection compares the session's CWD (from hook events) against running `claude` processes' CWD (from `/proc`). This uses **exact string match**, which can produce false DEAD results when:
+
+* **CWD drifts mid-session** — Claude Code's hook events may report a subdirectory the session navigated into, while the process CWD stays at the launch directory. Example: process at `/home/user/project`, hooks report `/home/user/project/src/submodule`.
+* **`claude -r` resume** — Resuming from a parent directory means the process CWD is the parent, but hooks report the original project path.
+
+A session that is alive but shows as DEAD is a false negative — it errs on the side of reporting DEAD rather than falsely claiming alive. See `query-hooks.DEV_NOTES.md` for proposed improvements (path ancestry matching, SessionStart CWD tracking, Claude project directory lookup).
 
 ## Output streams
 
