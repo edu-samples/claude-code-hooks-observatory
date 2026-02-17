@@ -305,7 +305,9 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
     if mode == "all":
         _output_all_waiting(all_waiting, args.jsonl)
     else:
-        _output_sessions(sessions, args.jsonl, without_dead)
+        _output_sessions(
+            sessions, args.jsonl, without_dead, sources, args.no_stats,
+        )
 
 
 def _output_all_waiting(events: list[dict], jsonl: bool) -> None:
@@ -328,7 +330,8 @@ def _state_sort_key(state: str) -> int:
 
 
 def _output_sessions(
-    sessions: dict[str, dict], jsonl: bool, without_dead: bool
+    sessions: dict[str, dict], jsonl: bool, without_dead: bool,
+    sources: list[Path] | None, no_stats: bool,
 ) -> None:
     """Output sessions with rich state, grouped by state category."""
     live_cwds = get_live_claude_cwds()
@@ -375,13 +378,20 @@ def _output_sessions(
             print(json.dumps(rec, separators=(",", ":")))
         return
 
-    # Summary counts
+    # Single-line summary: counts + source files + timing
     counts: dict[str, int] = {}
     for r in records:
         group = r["state"] if not r["state"].startswith("RUN:") else "RUN"
         counts[group] = counts.get(group, 0) + 1
     summary_parts = [f"{v} {k}" for k, v in counts.items()]
-    print(f"{', '.join(summary_parts)} ({len(records)} total)", file=sys.stderr)
+    parts = [f"{', '.join(summary_parts)} ({len(records)} total)"]
+    if sources:
+        names = ", ".join(p.name for p in sources)
+        parts.append(f"from {names}")
+    if not no_stats:
+        elapsed = time.monotonic() - _T0
+        parts.append(f"in {elapsed:.3f}s")
+    print(" | ".join(parts), file=sys.stderr)
 
     # Table output
     # Determine state column width (RUN:toolname can be long)
@@ -540,8 +550,6 @@ def resolve_sources(args: argparse.Namespace) -> list[Path] | None:
         return [Path(f) for f in args.file]
     discovered = discover_log_files()
     if discovered:
-        names = ", ".join(p.name for p in discovered)
-        print(f"Reading: {names}", file=sys.stderr)
         return discovered
     if not sys.stdin.isatty():
         return None  # read stdin
@@ -561,9 +569,6 @@ def main() -> None:
     # --waiting mode: separate code path
     if args.waiting is not None:
         run_waiting(args, sources)
-        if not args.no_stats:
-            elapsed = time.monotonic() - _T0
-            print(f"Completed in {elapsed:.3f}s", file=sys.stderr)
         return
 
     # Standard filter mode: parse, filter, output (streaming)
@@ -592,8 +597,13 @@ def main() -> None:
             print(format_event(event, args.jsonl))
 
     if not args.no_stats:
+        parts = []
+        if sources:
+            names = ", ".join(p.name for p in sources)
+            parts.append(f"Read {names}")
         elapsed = time.monotonic() - _T0
-        print(f"Completed in {elapsed:.3f}s", file=sys.stderr)
+        parts.append(f"in {elapsed:.3f}s")
+        print(" | ".join(parts), file=sys.stderr)
 
 
 if __name__ == "__main__":
