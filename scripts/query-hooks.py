@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
+VERSION = "0.3.0"
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -74,42 +75,47 @@ STATE_ORDER = {
 }
 
 
-def _is_alive(rec: dict, live_cwds: set[str]) -> bool:
+def _liveness_check(rec: dict, live_cwds: set[str]) -> str:
     """Check if a session's process is still running.
 
-    Uses a layered matching strategy against /proc CWDs:
-      1. Exact match on start_cwd (SessionStart CWD = process launch dir)
-      2. Exact match on last_cwd (latest hook CWD)
-      3. Path ancestry: hook CWD is under a live process CWD (or vice versa)
+    Returns the match method used, or empty string if not alive:
+      "exact:start" — exact match on SessionStart CWD
+      "exact:last"  — exact match on latest hook CWD
+      "ancestor:start" — start CWD is under a live process CWD
+      "ancestor:last"  — last CWD is under a live process CWD
+      ""            — no match (dead)
     """
     start_cwd = rec.get("start_cwd", "")
     last_cwd = rec.get("cwd", "")
 
     # Layer 1: exact match on start CWD (most reliable)
     if start_cwd and start_cwd in live_cwds:
-        return True
+        return "exact:start"
     # Layer 2: exact match on latest CWD
     if last_cwd and last_cwd in live_cwds:
-        return True
+        return "exact:last"
     # Layer 3: path ancestry — hook CWD is a subdirectory of a live process CWD
     for proc_cwd in live_cwds:
         if start_cwd:
             try:
                 Path(start_cwd).relative_to(proc_cwd)
-                return True
+                return "ancestor:start"
             except ValueError:
                 pass
         if last_cwd and last_cwd != start_cwd:
             try:
                 Path(last_cwd).relative_to(proc_cwd)
-                return True
+                return "ancestor:last"
             except ValueError:
                 pass
-    return False
+    return ""
 
 
-def session_state(rec: dict, live_cwds: set[str]) -> str:
+def session_state(rec: dict, live_cwds: set[str]) -> tuple[str, str]:
     """Derive display state from a session's last event.
+
+    Returns (state, liveness_method) where liveness_method is how the
+    process was matched (e.g. "exact:start", "ancestor:last") or "" if dead.
 
     States (in display order):
       FRESH    — just finished a turn, waiting for input (<60s)
@@ -123,11 +129,13 @@ def session_state(rec: dict, live_cwds: set[str]) -> str:
       DEAD     — process exited without SessionEnd
     """
     if rec["terminated"]:
-        return "TERMINATED"
+        return "TERMINATED", ""
 
     ev = rec["last_event"]
+    match_method = _liveness_check(rec, live_cwds)
+
     if ev is None:
-        return "DEAD" if not _is_alive(rec, live_cwds) else "RUN:?"
+        return ("DEAD", "") if not match_method else ("RUN:?", match_method)
 
     etype = ev.get("_event", "")
 
@@ -162,10 +170,10 @@ def session_state(rec: dict, live_cwds: set[str]) -> str:
         state = "RUN:?"
 
     # Override: any state + dead process → DEAD
-    if not _is_alive(rec, live_cwds):
-        return "DEAD"
+    if not match_method:
+        return "DEAD", ""
 
-    return state
+    return state, match_method
 
 
 def state_reason(ev: dict | None, state: str) -> str:
@@ -382,7 +390,7 @@ def _output_sessions(
     # Build output records with derived state
     records: list[dict] = []
     for sid, rec in sessions.items():
-        state = session_state(rec, live_cwds)
+        state, match_method = session_state(rec, live_cwds)
         # Skip terminated sessions entirely
         if state == "TERMINATED":
             continue
@@ -401,9 +409,11 @@ def _output_sessions(
             "session_id": sid,
             "state": state,
             "alive": alive,
+            "match": match_method,
             "reason": reason,
             "cwd": cwd,
             "project": project_name(cwd),
+            "_version": VERSION,
         }
         records.append(record)
 
@@ -421,7 +431,7 @@ def _output_sessions(
             print(json.dumps(rec, separators=(",", ":")))
         return
 
-    # Single-line summary: counts + source files + timing
+    # Single-line summary: counts + source files + timing + version
     counts: dict[str, int] = {}
     for r in records:
         group = r["state"] if not r["state"].startswith("RUN:") else "RUN"
@@ -433,8 +443,15 @@ def _output_sessions(
         parts.append(f"from {names}")
     if not no_stats:
         elapsed = time.monotonic() - _T0
-        parts.append(f"in {elapsed:.3f}s")
+        parts.append(f"in {elapsed:.3f}s (v{VERSION})")
     print(" | ".join(parts), file=sys.stderr)
+    # Liveness match method stats
+    match_counts: dict[str, int] = {}
+    for r in records:
+        m = r.get("match", "") or "dead"
+        match_counts[m] = match_counts.get(m, 0) + 1
+    match_summary = ", ".join(f"{v} {k}" for k, v in match_counts.items())
+    print(f"  liveness: {match_summary}", file=sys.stderr)
 
     # Table output
     # Determine state column width (RUN:toolname can be long)
