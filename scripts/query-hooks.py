@@ -94,6 +94,39 @@ KNOWN_COLUMNS = {
 # Default table columns (unchanged from pre-0.5.0 behavior)
 DEFAULT_TABLE_COLUMNS = ["state", "ago", "project", "reason", "session_id"]
 
+# Column descriptions for --columns-help
+COLUMN_DESCRIPTIONS: dict[str, str] = {
+    "state":        "Session state: FRESH, PERMIT, QUESTION, IDLE, RUN:*, DEAD. "
+                    "Derived from last tracked hook event + /proc liveness check.",
+    "ago":          "Human-readable time since last event (e.g. '5m ago'). "
+                    "Virtual column computed from _ts.",
+    "project":      "Short project name from last 2 path components of cwd "
+                    "(e.g. 'edu-samples/claude-code-hooks-observatory').",
+    "reason":       "Human-readable detail for current state "
+                    "(e.g. 'running: Bash', 'permission needed: Write').",
+    "session_id":   "Claude Code session UUID. Unique per session, persists across "
+                    "resumes. Truncated to 12 chars in table mode.",
+    "cwd":          "Latest working directory from the most recent hook event. "
+                    "May drift into subdirectories as Claude navigates.",
+    "start_cwd":    "Working directory from SessionStart event — the directory where "
+                    "'claude' was launched. Stable; best for /proc CWD matching.",
+    "alive":        "Boolean (true/false). True for all non-DEAD states. "
+                    "Backwards-compatible with pre-0.3.0 output.",
+    "match":        "Liveness detection method that matched this session: "
+                    "exact:start, exact:last, ancestor:start, ancestor:last, or '' (dead).",
+    "_ts":          "ISO 8601 timestamp of the last tracked hook event "
+                    "(e.g. '2026-02-17T19:09:44+00:00').",
+    "_version":     "query-hooks.py version that produced this record.",
+    "tmux_session": "Tmux session name (e.g. 'main'). Obtained via "
+                    "'tmux list-panes -a'. Omitted if session is not in tmux.",
+    "tmux_window":  "Tmux window index within the session (e.g. '2').",
+    "tmux_pane":    "Tmux pane index within the window (e.g. '0').",
+    "tmux_cwd":     "Tmux pane's current working directory (from #{pane_current_path}). "
+                    "May differ from cwd if Claude navigated elsewhere.",
+    "tmux_target":  "Tmux target spec in session:window.pane format (e.g. 'main:2.0'). "
+                    "Usable with 'tmux select-pane -t main:2.0'.",
+}
+
 
 @dataclass
 class TmuxInfo:
@@ -840,6 +873,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Output CSV (requires --waiting).",
     )
+    parser.add_argument(
+        "--columns-help",
+        action="store_true",
+        help="Show detailed description of each available column and exit.",
+    )
     return parser.parse_args()
 
 
@@ -911,8 +949,27 @@ def resolve_sources(args: argparse.Namespace) -> list[Path] | None:
     sys.exit(1)
 
 
+def _print_columns_help() -> None:
+    """Print detailed column descriptions and exit."""
+    # Find max column name length for alignment
+    name_w = max(len(name) for name in COLUMN_DESCRIPTIONS)
+    default_set = set(DEFAULT_TABLE_COLUMNS)
+    print(f"Available columns for --waiting mode (default: {','.join(DEFAULT_TABLE_COLUMNS)}):\n")
+    for name in sorted(COLUMN_DESCRIPTIONS):
+        desc = COLUMN_DESCRIPTIONS[name]
+        marker = " *" if name in default_set else "  "
+        print(f" {marker} {name:<{name_w}}  {desc}")
+    print(f"\n * = included in default table output")
+    print(f"\nIn filter mode (no --waiting), --columns selects keys from raw event JSON")
+    print(f"without validation — any key present in the event will be included.")
+
+
 def main() -> None:
     args = parse_args()
+
+    if args.columns_help:
+        _print_columns_help()
+        return
 
     # Validate --csv requires --waiting
     if args.csv and args.waiting is None:
