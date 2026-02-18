@@ -51,6 +51,7 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -339,17 +340,88 @@ def _find_git_root(path: str) -> str | None:
     return None
 
 
+_remote_name_cache: dict[str, str | None] = {}
+
+
+def _parse_org_repo(url: str) -> str | None:
+    """Extract org/repo from a git remote URL.
+
+    Handles:
+      git@github.com:org/repo.git
+      https://github.com/org/repo.git
+      ssh://git@github.com/org/repo.git
+    """
+    # SSH shorthand: git@host:org/repo.git
+    m = re.match(r"[^@]+@[^:]+:(.+/.+?)(?:\.git)?$", url)
+    if m:
+        return m.group(1)
+    # HTTPS or SSH URL: ...host/org/repo.git
+    m = re.match(r"(?:https?|ssh)://[^/]+/(.+/.+?)(?:\.git)?$", url)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _project_name_from_remote(git_root: str) -> str | None:
+    """Read .git/config and extract org/repo from remotes.
+
+    Tries 'origin' first, then any other remote. Returns None on failure.
+    Caches results keyed by git_root.
+    """
+    if git_root in _remote_name_cache:
+        return _remote_name_cache[git_root]
+
+    config_path = Path(git_root) / ".git" / "config"
+    try:
+        text = config_path.read_text()
+    except OSError:
+        _remote_name_cache[git_root] = None
+        return None
+
+    # Parse remote sections: [remote "name"] ... url = ...
+    remotes: dict[str, str] = {}
+    current_remote: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = re.match(r'\[remote "(.+)"\]', stripped)
+        if m:
+            current_remote = m.group(1)
+            continue
+        if stripped.startswith("["):
+            current_remote = None
+            continue
+        if current_remote and stripped.startswith("url = "):
+            remotes[current_remote] = stripped[6:].strip()
+
+    # Try origin first, then other remotes
+    for name in ["origin"] + [n for n in remotes if n != "origin"]:
+        if name in remotes:
+            result = _parse_org_repo(remotes[name])
+            if result:
+                _remote_name_cache[git_root] = result
+                return result
+
+    _remote_name_cache[git_root] = None
+    return None
+
+
 def project_name(path: str) -> str:
-    """Extract a short project name, preferring git root over raw path.
+    """Extract a short project name from git remote, git root, or raw path.
 
     Fallback chain:
-      1. Git root — find .git upward, take last 2 components of git root
-      2. Last 2 path components of the input path
-      3. "?" if no path available
+      1. Git remote origin — parse org/repo from .git/config URL
+      2. Other git remotes — try non-origin remotes
+      3. Git root — last 2 path components of the git root directory
+      4. Last 2 path components of the input path
+      5. "?" if no path available
     """
     if not path:
         return "?"
     git_root = _find_git_root(path)
+    if git_root:
+        remote_name = _project_name_from_remote(git_root)
+        if remote_name:
+            return remote_name
     base = git_root or path
     parts = Path(base).parts
     if len(parts) >= 2:
