@@ -155,12 +155,64 @@ cd rust-observatory && cargo test
 │   └── docs/                  # Testing guide
 │
 ├── scripts/                   # Shared query/analysis tools
-│   └── query-hooks.py         # Filter logs by event type, tool, session
+│   └── query-hooks.py         # Session states, event filtering, tmux integration (v0.6.0)
 │
 ├── agents/                    # AI assistant guidance
 ├── docs/plans/                # Design documents
 └── DEVELOPER_GUIDELINES.md    # Shared hook event specifications
 ```
+
+## Features
+
+### Observatory Servers
+
+* **All 12 hook events** captured with metadata enrichment (`_ts`, `_event`, `_client`/`_peer_pid`)
+* **Output formats:** JSONL (default, pipeable), pretty JSON, pretty YAML (with Pygments/ANSI highlighting)
+* **No-op by design** — hooks never interfere with Claude Code; empty 200 responses let actions proceed
+* **Graceful failure** — hook commands use `curl ... || true` with 0.5s timeout; server down = no impact
+* **Stream separation** — stdout for JSONL data (pipe to jq/files), stderr for human-readable logs
+* **Security by default** — TCP binds to `127.0.0.1`; Unix sockets use filesystem permissions (`--mode`)
+* **Multi-reader streaming** (Unix/Rust) — `--output-socket` + `--tee` for concurrent `socat` readers
+* **Log rotation** — `run-with-tee-logrotator.sh` with size-based rotation (configurable via `LOG_MAX_SIZE`, `LOG_MAX_COUNT`)
+
+### Session State Monitoring (`query-hooks.py --waiting`)
+
+* **Real-time session states:** FRESH, PERMIT, QUESTION, IDLE, RUN:Tool, RUN:think, RUN:agent, RUN:done, DEAD
+* **Dual liveness detection:**
+  * Stop/SessionEnd events for clean exits
+  * `/proc` cross-reference (Linux) for crashes, `kill -9`, closed terminals
+* **4-layer CWD matching:** exact:start, exact:last, ancestor:start, ancestor:last
+* **1-to-1 PID-to-session matching** — most recent session claims each running PID; older sessions from same directory become DEAD
+* **Git-root project names** — walks upward to find `.git`, takes last 2 path components (cached); falls back to raw path
+* **start_cwd preference** — uses SessionStart directory (stable) over drifted latest CWD
+
+### Tmux Integration
+
+* **Multi-server discovery** — scans `/tmp/tmux-$UID/` for all server sockets
+* **Ancestor PID walking** — traces from claude PID up to 15 hops to find its tmux pane
+* **Non-default server tagging** — `main:2.0 [ubertmux]` format for non-default servers
+* **Columns:** `tmux_target`, `tmux_session`, `tmux_window`, `tmux_pane`, `tmux_cwd`
+
+### Query & Export
+
+* **Event filtering:** by type, tool name, session ID (prefix match), last N events
+* **Output formats:** indented JSON, compact JSONL, CSV export, formatted table
+* **Configurable columns:** `--columns state,ago,tmux_target,project` with `--columns-help`
+* **Auto-discovery:** finds `*.log` and rotated `*.log.[0-9]*` files in `/tmp/claude/observatory/`
+* **Stdin support:** pipe JSONL directly for ad-hoc analysis
+
+### Hook Installer
+
+* **Safe merge** — preserves existing settings, backs up before writing
+* **Modes:** `--global`, `--project`, `--dry-run`, `--uninstall`
+* **Diff review** — shows changes before applying
+* **All 12 events** configured with appropriate curl commands per transport
+
+### Testing
+
+* **66+ Python tests** across TCP (23), Unix HTTPServer (28), Unix selectors (15)
+* **22 Rust tests** — 14 unit + 8 integration
+* **uv shebang pattern** — reproducible test execution without venv setup
 
 ## License
 
