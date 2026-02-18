@@ -104,8 +104,9 @@ COLUMN_DESCRIPTIONS: dict[str, str] = {
                     "Walks upward from start_cwd (or cwd) looking for .git, then takes "
                     "last 2 components (e.g. 'edu-samples/claude-code-hooks-observatory'). "
                     "Falls back to last 2 components of the raw path if no git root found.",
-    "reason":       "Human-readable detail for current state "
-                    "(e.g. 'running: Bash', 'permission needed: Write').",
+    "reason":       "Compact detail beyond what state shows. "
+                    "E.g. tool name for PERMIT, message for QUESTION, empty when "
+                    "state is self-explanatory (IDLE, FRESH, RUN:Tool).",
     "session_id":   "Claude Code session UUID. Unique per session, persists across "
                     "resumes. Truncated to 12 chars in table mode.",
     "cwd":          "Latest working directory from the most recent hook event. "
@@ -266,6 +267,9 @@ def state_reason(ev: dict | None, state: str) -> str:
             case "idle_prompt":
                 return ""  # IDLE is self-explanatory
             case "permission_prompt":
+                # Extract tool name from "Claude needs your permission to use X"
+                if msg.startswith("Claude needs your permission to use "):
+                    return msg.removeprefix("Claude needs your permission to use ")
                 return msg or ""
             case "elicitation_dialog":
                 return msg or ""
@@ -659,7 +663,7 @@ _COL_WIDTHS: dict[str, tuple[int, int]] = {
     "state": (8, 20),
     "ago": (8, 12),
     "project": (10, 35),
-    "reason": (10, 35),
+    "reason": (6, 20),
     "session_id": (12, 12),
     "cwd": (10, 60),
     "start_cwd": (10, 60),
