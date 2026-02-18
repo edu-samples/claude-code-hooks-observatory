@@ -79,9 +79,9 @@ WAITING_NOTIFICATION_TYPES = {"permission_prompt", "idle_prompt", "elicitation_d
 
 # Display order for state groups (lower = shown first)
 STATE_ORDER = {
-    "fresh": 0, "permit": 1, "ask": 2, "idle": 3,
-    # run:* / started / think / agent / done all get order 4 (see _state_sort_key)
-    "dead": 5,
+    "FRESH": 0, "PERMIT": 1, "QUESTION": 2, "IDLE": 3,
+    # RUN:* states all get order 4 (see _state_sort_key)
+    "DEAD": 5,
 }
 
 # Known columns for --waiting mode (used by --columns validation)
@@ -96,8 +96,8 @@ DEFAULT_TABLE_COLUMNS = ["tmux_target", "state", "ago", "project", "reason", "se
 
 # Column descriptions for --columns-help
 COLUMN_DESCRIPTIONS: dict[str, str] = {
-    "state":        "Session state: fresh, permit, ask, idle, run:*, started, think, "
-                    "agent, done, dead. Derived from last hook event + /proc liveness.",
+    "state":        "Session state: FRESH, PERMIT, QUESTION, IDLE, RUN:*, DEAD. "
+                    "Derived from last tracked hook event + /proc liveness check.",
     "ago":          "Human-readable time since last event (e.g. '5m ago'). "
                     "Virtual column computed from _ts.",
     "project":      "Short project name derived from git root (preferred) or path. "
@@ -187,103 +187,103 @@ def session_state(rec: dict, live_cwds: set[str]) -> tuple[str, str]:
     process was matched (e.g. "exact:start", "ancestor:last") or "" if dead.
 
     States (in display order):
-      fresh   — just finished a turn, waiting for input (<60s)
-      permit  — needs user to approve a tool
-      ask     — Claude is asking the user something
-      idle    — waiting for input (60s+ elapsed)
-      run:*   — executing a tool (tool name shown)
-      think   — processing user prompt
-      agent   — subagent active
-      done    — between tools (thinking)
-      started — session started, no further events yet
-      dead    — process exited without SessionEnd
+      FRESH    — just finished a turn, waiting for input (<60s)
+      PERMIT   — needs user to approve a tool
+      QUESTION — Claude is asking the user something
+      IDLE     — waiting for input (60s+ elapsed)
+      RUN:tool — executing a tool (tool name shown)
+      RUN:think — processing user prompt
+      RUN:agent — subagent active
+      RUN:done  — between tools (thinking)
+      DEAD     — process exited without SessionEnd
     """
     if rec["terminated"]:
-        return "terminated", ""
+        return "TERMINATED", ""
 
     ev = rec["last_event"]
     match_method = _liveness_check(rec, live_cwds)
 
     if ev is None:
-        return ("dead", "") if not match_method else ("run:?", match_method)
+        return ("DEAD", "") if not match_method else ("RUN:?", match_method)
 
     etype = ev.get("_event", "")
 
     # Waiting states
     if etype == "Stop":
-        state = "fresh"
+        state = "FRESH"
     elif etype == "PermissionRequest":
-        state = "permit"
+        state = "PERMIT"
     elif etype == "Notification":
         ntype = ev.get("notification_type", "")
         if ntype == "idle_prompt":
-            state = "idle"
+            state = "IDLE"
         elif ntype == "permission_prompt":
-            state = "permit"
+            state = "PERMIT"
         elif ntype == "elicitation_dialog":
-            state = "ask"
+            state = "QUESTION"
         else:
-            state = "idle"  # unknown notification → treat as idle
+            state = "IDLE"  # unknown notification → treat as idle
     # Running states
     elif etype == "PreToolUse":
         tool = ev.get("tool_name", "?")
-        state = f"run:{tool}"
+        state = f"RUN:{tool}"
     elif etype == "UserPromptSubmit":
-        state = "think"
+        state = "RUN:think"
     elif etype == "SubagentStart":
-        state = "agent"
+        state = "RUN:agent"
     elif etype in ("PostToolUse", "PostToolUseFailure", "SubagentStop"):
-        state = "done"
+        state = "RUN:done"
     elif etype == "SessionStart":
-        state = "started"
+        state = "RUN:start"
     else:
-        state = "run:?"
+        state = "RUN:?"
 
-    # Override: any state + dead process → dead
+    # Override: any state + dead process → DEAD
     if not match_method:
-        return "dead", ""
+        return "DEAD", ""
 
     return state, match_method
 
 
 def state_reason(ev: dict | None, state: str) -> str:
-    """Human-readable reason/detail for the session's current state."""
+    """Compact reason adding info beyond what state already shows.
+
+    Avoids repeating what's visible in the state column (e.g. RUN:Bash
+    already tells you the tool, so reason is empty).
+    """
     if ev is None:
-        return "no events recorded"
+        return ""
 
     etype = ev.get("_event", "")
     if etype == "Stop":
-        return "waiting for input"
+        return ""  # FRESH is self-explanatory
     if etype == "PermissionRequest":
-        tool = ev.get("tool_name", "?")
-        return f"permission needed: {tool}"
+        return ev.get("tool_name", "?")
     if etype == "Notification":
         ntype = ev.get("notification_type", "")
         msg = ev.get("message", "")
         match ntype:
             case "idle_prompt":
-                return "idle — waiting for input"
+                return ""  # IDLE is self-explanatory
             case "permission_prompt":
-                return msg or "permission dialog"
+                return msg or ""
             case "elicitation_dialog":
-                return msg or "question for user"
+                return msg or ""
             case _:
                 return msg or ntype
     if etype == "PreToolUse":
-        tool = ev.get("tool_name", "?")
-        return f"running: {tool}"
+        return ""  # RUN:Tool already shows tool name
     if etype == "UserPromptSubmit":
-        return "processing prompt"
+        return ""  # RUN:think is self-explanatory
     if etype == "SubagentStart":
-        return "subagent active"
+        return ""  # RUN:agent is self-explanatory
     if etype in ("PostToolUse", "PostToolUseFailure"):
-        tool = ev.get("tool_name", "?")
-        return f"finished: {tool}"
+        return f"after {ev.get('tool_name', '?')}"
     if etype == "SubagentStop":
-        return "subagent finished"
+        return "after agent"
     if etype == "SessionStart":
-        return "session started (no further events)"
-    return etype
+        return ""  # RUN:start is self-explanatory
+    return ""
 
 
 _git_root_cache: dict[str, str | None] = {}
@@ -621,8 +621,8 @@ def _output_all_waiting(events: list[dict], jsonl: bool) -> None:
 
 
 def _state_sort_key(state: str) -> int:
-    """Sort key for state grouping. Running states all sort together at position 4."""
-    if state.startswith("run:"):
+    """Sort key for state grouping. RUN:* states all sort together at position 4."""
+    if state.startswith("RUN:"):
         return 4
     return STATE_ORDER.get(state, 4)
 
@@ -656,7 +656,7 @@ def record_get_col(record: dict, col: str) -> str:
 
 # Column display widths for table mode (min width, max/truncate width)
 _COL_WIDTHS: dict[str, tuple[int, int]] = {
-    "state": (5, 16),
+    "state": (8, 20),
     "ago": (8, 12),
     "project": (10, 35),
     "reason": (10, 35),
@@ -771,18 +771,18 @@ def _output_sessions(
         unclaimed_cwds = set(avail_pid_cwd.values())
         state, match_method = session_state(rec, unclaimed_cwds)
 
-        if matched_pid and state != "dead":
+        if matched_pid and state != "DEAD":
             claimed_pids.add(matched_pid)
 
         # Skip dead if --without-dead
-        if without_dead and state == "dead":
+        if without_dead and state == "DEAD":
             continue
 
         ev = rec["last_event"]
         ts = ev.get("_ts", "") if ev else ""
         cwd = rec["cwd"]
         reason = state_reason(ev, state)
-        alive = state != "dead"
+        alive = state != "DEAD"
 
         record: dict = {
             "_ts": ts,
@@ -829,7 +829,7 @@ def _output_sessions(
     # Single-line summary: counts + source files + timing + version
     counts: dict[str, int] = {}
     for r in records:
-        group = r["state"] if not r["state"].startswith("run:") else "run"
+        group = r["state"] if not r["state"].startswith("RUN:") else "RUN"
         counts[group] = counts.get(group, 0) + 1
     summary_parts = [f"{v} {k}" for k, v in counts.items()]
     parts = [f"{', '.join(summary_parts)} ({len(records)} total)"]
@@ -927,7 +927,7 @@ def parse_args() -> argparse.Namespace:
         help="Show session states. "
         "Modes: 'recent' (default) = current session states; "
         "'all' = every waiting event in history. "
-        "States: fresh, permit, ask, idle, run:*, started, think, agent, done, dead.",
+        "States: FRESH, PERMIT, QUESTION, IDLE, RUN:*, DEAD.",
     )
     parser.add_argument(
         "--without-dead",
