@@ -127,7 +127,8 @@ COLUMN_DESCRIPTIONS: dict[str, str] = {
     "tmux_cwd":     "Tmux pane's current working directory (from #{pane_current_path}). "
                     "May differ from cwd if Claude navigated elsewhere.",
     "tmux_target":  "Tmux target spec in session:window.pane format (e.g. 'main:2.0'). "
-                    "Usable with 'tmux select-pane -t main:2.0'.",
+                    "Non-default servers shown as 'main:2.0 [servername]'. "
+                    "Usable with 'tmux [-L servername] select-pane -t main:2.0'.",
 }
 
 
@@ -138,11 +139,15 @@ class TmuxInfo:
     window_index: str
     pane_index: str
     pane_cwd: str
+    server_name: str = ""  # empty = default server
 
     @property
     def target(self) -> str:
-        """Tmux target spec, e.g. 'main:2.0'."""
-        return f"{self.session_name}:{self.window_index}.{self.pane_index}"
+        """Tmux target spec, e.g. 'main:2.0' or 'main:2.0 [ubertmux]'."""
+        base = f"{self.session_name}:{self.window_index}.{self.pane_index}"
+        if self.server_name and self.server_name != "default":
+            return f"{base} [{self.server_name}]"
+        return base
 
 
 def _liveness_check(rec: dict, live_cwds: set[str]) -> str:
@@ -422,37 +427,70 @@ def get_proc_ppid(pid: int) -> int | None:
         return None
 
 
-def get_tmux_pane_map() -> dict[int, TmuxInfo]:
-    """Parse tmux list-panes to build {shell_pid: TmuxInfo}.
+def _discover_tmux_servers() -> list[str]:
+    """Find all tmux server sockets in /tmp/tmux-$UID/.
 
-    Returns empty dict if tmux is not installed or not running.
+    Returns server names (socket filenames). Empty list if directory
+    doesn't exist or no sockets found.
     """
-    pane_map: dict[int, TmuxInfo] = {}
+    tmux_dir = Path(f"/tmp/tmux-{os.getuid()}")
+    if not tmux_dir.is_dir():
+        return []
+    servers = []
+    for entry in tmux_dir.iterdir():
+        if entry.is_socket():
+            servers.append(entry.name)
+    return servers
+
+
+def _query_tmux_server(server_name: str) -> str:
+    """Run tmux list-panes on a specific server. Returns stdout or ""."""
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F",
+            ["tmux", "-L", server_name, "list-panes", "-a", "-F",
              "#{pane_pid} #{pane_current_path} #{session_name} #{window_index} #{pane_index}"],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode != 0:
-            return pane_map
+        return result.stdout if result.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return pane_map
+        return ""
 
-    for line in result.stdout.splitlines():
-        parts = line.split(" ", 4)
-        if len(parts) < 5:
+
+def get_tmux_pane_map() -> dict[int, TmuxInfo]:
+    """Parse tmux list-panes across all servers to build {shell_pid: TmuxInfo}.
+
+    Discovers all tmux servers in /tmp/tmux-$UID/ and queries each.
+    Non-default servers are tagged in TmuxInfo.server_name so that
+    tmux_target shows e.g. 'main:2.0 [ubertmux]'.
+    Returns empty dict if tmux is not installed or not running.
+    """
+    pane_map: dict[int, TmuxInfo] = {}
+    servers = _discover_tmux_servers()
+    if not servers:
+        # Fallback: try default server without discovery
+        servers = ["default"]
+
+    for server_name in servers:
+        stdout = _query_tmux_server(server_name)
+        if not stdout:
             continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        pane_map[pid] = TmuxInfo(
-            session_name=parts[2],
-            window_index=parts[3],
-            pane_index=parts[4],
-            pane_cwd=parts[1],
-        )
+        for line in stdout.splitlines():
+            parts = line.split(" ", 4)
+            if len(parts) < 5:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            # First server to claim a PID wins (shouldn't conflict)
+            if pid not in pane_map:
+                pane_map[pid] = TmuxInfo(
+                    session_name=parts[2],
+                    window_index=parts[3],
+                    pane_index=parts[4],
+                    pane_cwd=parts[1],
+                    server_name=server_name,
+                )
     return pane_map
 
 
