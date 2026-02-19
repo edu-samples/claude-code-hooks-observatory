@@ -115,6 +115,9 @@ uv run --script tcp-observatory/test_server.py -v
 uv run --script unix-socket-observatory/test_server.py -v
 uv run --script unix-socket-observatory/test_server_selectors.py -v
 
+# JSONL fan-out
+uv run --script jsonl-fanout/test_fanout.py -v
+
 # Rust
 cd rust-observatory && cargo test
 ```
@@ -124,6 +127,7 @@ cd rust-observatory && cargo test
 * [DEVELOPER_GUIDELINES.md](DEVELOPER_GUIDELINES.md) - Hook event specs with official sources
 * [tcp-observatory/docs/PIPING_EXAMPLES.md](tcp-observatory/docs/PIPING_EXAMPLES.md) - jq filters, log rotation, FIFOs, alerting recipes
 * [docs/CONCURRENCY.md](docs/CONCURRENCY.md) - How servers handle parallel requests, backlog, timeouts
+* [jsonl-fanout/README.md](jsonl-fanout/README.md) - JSONL fan-out daemon (ZeroMQ-inspired PUB/SUB)
 * [FUTURE_WORK.md](FUTURE_WORK.md) - Roadmap
 
 ## Project Structure
@@ -154,6 +158,11 @@ cd rust-observatory && cargo test
 │   ├── configs/               # TCP, Unix, minimal hook configs
 │   └── docs/                  # Testing guide
 │
+├── jsonl-fanout/              # JSONL fan-out daemon (PUB/SUB)
+│   ├── fanout.py              # Reads stdin, fans out to Unix socket subscribers
+│   ├── subscribe.py           # Minimal subscriber client
+│   └── test_fanout.py         # 6 integration tests
+│
 ├── scripts/                   # Shared query/analysis tools
 │   └── query-hooks.py         # Session states, event filtering, tmux integration (v0.6.0)
 │
@@ -173,6 +182,7 @@ cd rust-observatory && cargo test
 * **Stream separation** — stdout for JSONL data (pipe to jq/files), stderr for human-readable logs
 * **Security by default** — TCP binds to `127.0.0.1`; Unix sockets use filesystem permissions (`--mode`)
 * **Multi-reader streaming** (Unix/Rust) — `--output-socket` + `--tee` for concurrent `socat` readers
+* **JSONL fan-out** — standalone PUB/SUB daemon; pipe any server's stdout into `fanout.py` for dynamic subscribers
 * **Log rotation** — `run-with-tee-logrotator.sh` with size-based rotation (configurable via `LOG_MAX_SIZE`, `LOG_MAX_COUNT`)
 
 ### Session State Monitoring (`query-hooks.py --waiting`)
@@ -210,7 +220,7 @@ cd rust-observatory && cargo test
 
 ### Testing
 
-* **66+ Python tests** across TCP (23), Unix HTTPServer (28), Unix selectors (15)
+* **72+ Python tests** across TCP (23), Unix HTTPServer (28), Unix selectors (15), fan-out (6)
 * **22 Rust tests** — 14 unit + 8 integration
 * **uv shebang pattern** — reproducible test execution without venv setup
 

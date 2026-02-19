@@ -84,6 +84,36 @@ export CLAUDE_FANOUT_SOCKET=/run/user/$(id -u)/claude-fanout.sock
 ./jsonl-fanout/subscribe.py  # same
 ```
 
+## Why This Design? The Lego Blocks Philosophy
+
+This daemon follows the same philosophy as ZeroMQ: build small, composable pieces
+that snap together like construction toys. Rather than embedding fan-out into each
+observatory server, we make a standalone tool that any server can pipe into.
+
+> "Make building blocks that people can understand and use *easily*, and people
+> will work together to solve the very largest problems."
+> — [The ZeroMQ Guide, Chapter 1](https://zguide.zeromq.org/docs/chapter1/)
+
+ZeroMQ provides four fundamental socket patterns (request-reply, pub-sub, pipeline,
+exclusive pair) as building blocks. We borrow one — PUB/SUB — and implement it with
+Unix pipes and sockets. Start simple (just `tee` to a log file), then snap on
+fan-out when you need multiple consumers.
+
+For the full "sockets as building blocks" concept, see
+[Chapter 2: Sockets and Patterns](https://zguide.zeromq.org/docs/chapter2/) in the
+ZeroMQ Guide.
+
+## Learning Path
+
+This tool fits into the repo's progressive learning curve:
+
+1. **Start simple** — `./tcp-observatory/server.py` pipes JSONL to stdout, `tee` saves to a file
+2. **Add filtering** — pipe through `jq` or `query-hooks.py` for ad-hoc analysis
+3. **Add fan-out** — pipe into `fanout.py` when you need multiple concurrent consumers
+4. **Build on top** — write your own subscriber that does alerting, dashboards, or metrics
+
+Each step adds one concept without changing the previous ones. That's the point.
+
 ## Design Decisions
 
 | Decision | Choice | Why |
