@@ -43,6 +43,15 @@ Examples:
 
     # CSV export
     ./scripts/query-hooks.py --waiting --csv --columns state,session_id,project,tmux_target
+
+    # Live dashboard: refresh every 2 seconds (default)
+    ./scripts/query-hooks.py --waiting --watch
+
+    # Custom refresh interval
+    ./scripts/query-hooks.py --waiting --watch=1.5
+
+    # Live filter view
+    ./scripts/query-hooks.py PreToolUse --watch=3
 """
 from __future__ import annotations
 
@@ -62,7 +71,7 @@ from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -1071,6 +1080,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Show detailed description of each available column and exit.",
     )
+    parser.add_argument(
+        "--watch",
+        nargs="?",
+        const=2.0,
+        default=None,
+        type=float,
+        metavar="SECS",
+        help="Auto-refresh output every SECS seconds (default: 2.0). "
+        "Clears screen between refreshes, like watch(1). Ctrl-C to stop.",
+    )
     return parser.parse_args()
 
 
@@ -1157,13 +1176,8 @@ def _print_columns_help() -> None:
     print(f"without validation — any key present in the event will be included.")
 
 
-def main() -> None:
-    args = parse_args()
-
-    if args.columns_help:
-        _print_columns_help()
-        return
-
+def _run_once(args: argparse.Namespace) -> None:
+    """Execute a single query run (shared by normal and --watch modes)."""
     # Validate --csv requires --waiting
     if args.csv and args.waiting is None:
         print("Error: --csv requires --waiting", file=sys.stderr)
@@ -1222,6 +1236,41 @@ def main() -> None:
         elapsed = time.monotonic() - _T0
         parts.append(f"in {elapsed:.3f}s")
         print(" | ".join(parts), file=sys.stderr)
+
+
+def main() -> None:
+    global _T0
+    args = parse_args()
+
+    if args.columns_help:
+        _print_columns_help()
+        return
+
+    if args.watch is None:
+        _run_once(args)
+        return
+
+    # --watch mode: validate interval and loop
+    interval = args.watch
+    if interval <= 0:
+        print(f"Error: --watch interval must be positive, got {interval}", file=sys.stderr)
+        sys.exit(1)
+
+    argv_str = " ".join(sys.argv[1:])
+    try:
+        while True:
+            _T0 = time.monotonic()
+            _git_root_cache.clear()
+            _remote_name_cache.clear()
+            sys.stderr.write("\033[2J\033[H")
+            sys.stderr.flush()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"Every {interval}s: query-hooks.py {argv_str}    {now}", file=sys.stderr)
+            print(file=sys.stderr)
+            _run_once(args)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(file=sys.stderr)  # clean line after ^C
 
 
 if __name__ == "__main__":
