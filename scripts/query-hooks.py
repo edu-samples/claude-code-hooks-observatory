@@ -71,7 +71,12 @@ from pathlib import Path
 from typing import Iterator
 
 _T0 = time.monotonic()
-VERSION = "0.7.0"
+VERSION = "0.8.0"
+
+# Profiling: per-frame phase timings and history for moving averages
+_timings: dict[str, float] = {}
+_frame_history: deque[tuple[float, dict[str, float]]] = deque()  # (monotonic_ts, timings)
+_HISTORY_WINDOW = 600.0  # 10 minutes
 
 DEFAULT_LOG_DIR = Path("/tmp/claude/observatory")
 
@@ -552,7 +557,9 @@ def get_tmux_pane_map() -> dict[int, TmuxInfo]:
         servers = ["default"]
 
     for server_name in servers:
+        t_srv = time.monotonic()
         stdout = _query_tmux_server(server_name)
+        _timings[f"tmux_srv:{server_name}"] = time.monotonic() - t_srv
         if not stdout:
             continue
         for line in stdout.splitlines():
@@ -656,11 +663,14 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
     """Handle --waiting mode: show session states."""
     mode = args.waiting  # "recent" or "all"
     without_dead = getattr(args, "without_dead", False)
+    verbose = getattr(args, "verbose", 0) or 0
 
     # Per-session tracking
     sessions: dict[str, dict] = {}
     all_waiting: list[dict] = []
 
+    t_parse = time.monotonic()
+    line_count = 0
     for line in iter_lines(sources):
         line = line.strip()
         if not line or line[0] != "{":
@@ -670,6 +680,7 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
         except json.JSONDecodeError:
             continue
 
+        line_count += 1
         sid = event.get("session_id", "")
         if not sid:
             continue
@@ -719,6 +730,10 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
                 enriched = {k: v for k, v in enriched.items() if v is not None}
                 all_waiting.append(enriched)
 
+    _timings["log_parse"] = time.monotonic() - t_parse
+    _timings["log_lines"] = line_count
+    _timings["log_sessions"] = len(sessions)
+
     columns = getattr(args, "_columns", None)
     csv_mode = getattr(args, "csv", False)
 
@@ -727,7 +742,7 @@ def run_waiting(args: argparse.Namespace, sources: list[Path] | None) -> None:
     else:
         _output_sessions(
             sessions, args.jsonl, without_dead, sources, args.no_stats,
-            columns=columns, csv_mode=csv_mode,
+            columns=columns, csv_mode=csv_mode, verbose=verbose,
         )
 
 
@@ -850,23 +865,93 @@ def _output_csv(records: list[dict], columns: list[str]) -> None:
     sys.stdout.write(buf.getvalue())
 
 
+def _print_verbose_stats(verbose: int) -> None:
+    """Print profiling stats to stderr based on verbosity level."""
+    t = _timings
+    total = t.get("total", 0)
+
+    # -v: phase breakdown as a single compact line
+    phases = ["log_parse", "proc_scan", "tmux_query", "tmux_correlate", "state_derive", "render"]
+    phase_labels = {
+        "log_parse": "parse", "proc_scan": "proc", "tmux_query": "tmux",
+        "tmux_correlate": "correlate", "state_derive": "state", "render": "render",
+    }
+    bar = "  timing: " + "  ".join(
+        f"{phase_labels[p]}={t.get(p, 0)*1000:.0f}ms" for p in phases
+    )
+    print(bar, file=sys.stderr)
+
+    if verbose >= 2:
+        # -vv: detail line with counts
+        lines = int(t.get("log_lines", 0))
+        sessions = int(t.get("log_sessions", 0))
+        pids = int(t.get("proc_pids", 0))
+        panes = int(t.get("tmux_panes", 0))
+        print(
+            f"  detail: {lines} lines, {sessions} sessions, "
+            f"{pids} claude PIDs, {panes} tmux panes",
+            file=sys.stderr,
+        )
+
+        # Moving averages (only meaningful in watch mode with history)
+        now = time.monotonic()
+        _frame_history.append((now, dict(t)))
+        # Prune old entries
+        while _frame_history and (now - _frame_history[0][0]) > _HISTORY_WINDOW:
+            _frame_history.popleft()
+        if len(_frame_history) >= 2:
+            n = len(_frame_history)
+            window_secs = now - _frame_history[0][0]
+            avg_parts = []
+            for p in phases:
+                vals = [h[1].get(p, 0) for h in _frame_history]
+                avg_parts.append(f"{phase_labels[p]}={sum(vals)/n*1000:.0f}ms")
+            avg_total = sum(h[1].get("total", 0) for h in _frame_history) / n
+            print(
+                f"  avg({n} frames, {window_secs:.0f}s): "
+                f"total={avg_total*1000:.0f}ms  " + "  ".join(avg_parts),
+                file=sys.stderr,
+            )
+
+    if verbose >= 3:
+        # -vvv: trace — per-file and per-tmux-server timings
+        file_keys = sorted(k for k in t if k.startswith("file:"))
+        if file_keys:
+            parts = [f"{k.removeprefix('file:')}={t[k]*1000:.0f}ms" for k in file_keys]
+            print(f"  files: {', '.join(parts)}", file=sys.stderr)
+        srv_keys = sorted(k for k in t if k.startswith("tmux_srv:"))
+        if srv_keys:
+            parts = [f"{k.removeprefix('tmux_srv:')}={t[k]*1000:.0f}ms" for k in srv_keys]
+            print(f"  tmux servers: {', '.join(parts)}", file=sys.stderr)
+
+
 def _output_sessions(
     sessions: dict[str, dict], jsonl: bool, without_dead: bool,
     sources: list[Path] | None, no_stats: bool,
     columns: list[str] | None = None, csv_mode: bool = False,
+    verbose: int = 0,
 ) -> None:
     """Output sessions with rich state, grouped by state category."""
     # Get PID→CWD map (used for both liveness and tmux correlation)
+    t0 = time.monotonic()
     pid_cwd_map = get_claude_pid_cwd_map()
+    _timings["proc_scan"] = time.monotonic() - t0
+    _timings["proc_pids"] = len(pid_cwd_map)
     live_cwds = set(pid_cwd_map.values())
 
     # Tmux correlation (graceful: empty if tmux unavailable)
+    t0 = time.monotonic()
     pane_map = get_tmux_pane_map()
+    _timings["tmux_query"] = time.monotonic() - t0
+    _timings["tmux_panes"] = len(pane_map)
+    t0 = time.monotonic()
     tmux_for_claude = build_tmux_for_claude(pid_cwd_map, pane_map)
+    _timings["tmux_correlate"] = time.monotonic() - t0
 
     # Build output records with derived state.
     # 1-to-1 PID matching: sort sessions by recency so the most recent session
     # in each CWD claims the running PID; older sessions become DEAD.
+    t_state = time.monotonic()
     sorted_sids = sorted(
         sessions.keys(),
         key=lambda s: _ts_sortval(
@@ -931,6 +1016,8 @@ def _output_sessions(
 
         records.append(record)
 
+    _timings["state_derive"] = time.monotonic() - t_state
+
     if not records:
         print("No active sessions found.", file=sys.stderr)
         return
@@ -972,7 +1059,13 @@ def _output_sessions(
     print(f"  liveness: {match_summary}", file=sys.stderr)
 
     # Table output via column-aware renderer
+    t_render = time.monotonic()
     _render_table(records, columns or DEFAULT_TABLE_COLUMNS)
+    _timings["render"] = time.monotonic() - t_render
+    _timings["total"] = time.monotonic() - _T0
+
+    if verbose >= 1:
+        _print_verbose_stats(verbose)
 
 
 def _ts_sortval(ts_str: str) -> float:
@@ -1081,6 +1174,14 @@ def parse_args() -> argparse.Namespace:
         help="Show detailed description of each available column and exit.",
     )
     parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Verbose profiling stats. -v: phase breakdown, "
+        "-vv: +detail +10min moving averages, -vvv: trace (per-file, per-server).",
+    )
+    parser.add_argument(
         "--watch",
         nargs="?",
         const=2.0,
@@ -1114,11 +1215,13 @@ def iter_lines(sources: list[Path] | None) -> Iterator[str]:
     """Yield lines from files or stdin, one at a time (streaming)."""
     if sources:
         for path in sources:
+            t_file = time.monotonic()
             try:
                 with open(path) as f:
                     yield from f
             except FileNotFoundError:
                 print(f"Warning: {path} not found, skipping.", file=sys.stderr)
+            _timings[f"file:{path.name}"] = time.monotonic() - t_file
     else:
         yield from sys.stdin
 
@@ -1178,6 +1281,7 @@ def _print_columns_help() -> None:
 
 def _run_once(args: argparse.Namespace) -> None:
     """Execute a single query run (shared by normal and --watch modes)."""
+    _timings.clear()
     # Validate --csv requires --waiting
     if args.csv and args.waiting is None:
         print("Error: --csv requires --waiting", file=sys.stderr)
