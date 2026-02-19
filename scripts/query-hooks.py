@@ -1262,12 +1262,23 @@ def main() -> None:
             _T0 = time.monotonic()
             _git_root_cache.clear()
             _remote_name_cache.clear()
-            sys.stderr.write("\033[2J\033[H")
-            sys.stderr.flush()
+            # Buffer all output, then clear+write in one burst (no blink)
+            buf_out, buf_err = io.StringIO(), io.StringIO()
+            real_out, real_err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = buf_out, buf_err
+            try:
+                _run_once(args)
+            finally:
+                sys.stdout, sys.stderr = real_out, real_err
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"Every {interval}s: query-hooks.py {argv_str}    {now}", file=sys.stderr)
-            print(file=sys.stderr)
-            _run_once(args)
+            header = f"Every {interval}s: query-hooks.py {argv_str}    {now}\n\n"
+            # Atomic swap: clear screen + header + stderr + stdout in one write
+            real_err.write(f"\033[2J\033[H{header}{buf_err.getvalue()}")
+            real_err.flush()
+            out = buf_out.getvalue()
+            if out:
+                real_out.write(out)
+                real_out.flush()
             time.sleep(interval)
     except KeyboardInterrupt:
         print(file=sys.stderr)  # clean line after ^C
