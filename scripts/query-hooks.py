@@ -59,8 +59,10 @@ import argparse
 import csv
 import io
 import json
+import lzma
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -792,52 +794,136 @@ def record_get_col(record: dict, col: str) -> str:
     return str(val) if val is not None else ""
 
 
-# Column display widths for table mode (min width, max/truncate width)
-_COL_WIDTHS: dict[str, tuple[int, int]] = {
-    "state": (8, 20),
-    "ago": (8, 12),
-    "project": (10, 35),
-    "reason": (6, 20),
-    "session_id": (12, 12),
-    "cwd": (10, 60),
-    "start_cwd": (10, 60),
-    "tmux_session": (8, 20),
-    "tmux_window": (6, 6),
-    "tmux_pane": (5, 5),
-    "tmux_cwd": (10, 60),
-    "tmux_target": (10, 20),
+@dataclass
+class ColSpec:
+    """Column layout specification for adaptive table rendering.
+
+    See docs/ADAPTIVE_TABLE.md for the full algorithm description.
+    """
+    priority: int      # higher = kept longer (10 = essential, 1 = nice-to-have)
+    min_width: int     # below this, drop the column instead of rendering
+    max_width: int     # don't stretch beyond this
+    weight: float      # proportional share of flexible space
+    right_align: bool = False
+
+COL_SPECS: dict[str, ColSpec] = {
+    "state":        ColSpec(priority=10, min_width=6,  max_width=20, weight=1.5),
+    "ago":          ColSpec(priority=9,  min_width=7,  max_width=12, weight=0.8, right_align=True),
+    "project":      ColSpec(priority=8,  min_width=10, max_width=40, weight=3.0),
+    "tmux_target":  ColSpec(priority=7,  min_width=8,  max_width=22, weight=1.5),
+    "reason":       ColSpec(priority=5,  min_width=6,  max_width=25, weight=2.0),
+    "session_id":   ColSpec(priority=4,  min_width=12, max_width=12, weight=1.0),
+    "cwd":          ColSpec(priority=3,  min_width=15, max_width=60, weight=3.0),
+    "start_cwd":    ColSpec(priority=3,  min_width=15, max_width=60, weight=3.0),
+    "tmux_session": ColSpec(priority=3,  min_width=6,  max_width=20, weight=1.0),
+    "tmux_window":  ColSpec(priority=2,  min_width=4,  max_width=6,  weight=0.5),
+    "tmux_pane":    ColSpec(priority=2,  min_width=4,  max_width=5,  weight=0.5),
+    "tmux_cwd":     ColSpec(priority=2,  min_width=15, max_width=60, weight=3.0),
 }
+
+SEPARATOR = "  "
+
+
+def select_columns(columns: list[str], terminal_width: int) -> list[str]:
+    """Phase 1: Additive column selection, highest priority first.
+
+    Adds columns from highest to lowest priority until min_widths + separators
+    would exceed terminal_width. Returns columns in their original display order.
+    """
+    sorted_cols = sorted(columns, key=lambda c: COL_SPECS.get(c, ColSpec(0, 8, 30, 1.0)).priority, reverse=True)
+    selected: set[str] = set()
+    for col in sorted_cols:
+        candidate = list(selected) + [col]
+        sep_total = len(SEPARATOR) * max(len(candidate) - 1, 0)
+        needed = sum(COL_SPECS.get(c, ColSpec(0, 8, 30, 1.0)).min_width for c in candidate) + sep_total
+        if needed <= terminal_width:
+            selected.add(col)
+        else:
+            break
+    return [c for c in columns if c in selected]
+
+
+def allocate_widths(columns: list[str], terminal_width: int) -> dict[str, int]:
+    """Phase 2: Iterative ratio-based width allocation with min/max clamping.
+
+    Distributes space proportionally by weight. Columns that hit min or max
+    boundaries get fixed; remaining space is redistributed among flexible columns.
+    Converges in <= len(columns) rounds; 2*len safety bound asserts no bugs.
+    """
+    sep_total = len(SEPARATOR) * max(len(columns) - 1, 0)
+    available = terminal_width - sep_total
+    widths: dict[str, int] = {c: 0 for c in columns}
+    flexible: dict[str, bool] = {c: True for c in columns}
+
+    max_rounds = 2 * len(columns) if columns else 1
+    for _ in range(max_rounds):
+        flex_cols = [c for c in columns if flexible[c]]
+        if not flex_cols:
+            break
+        fixed_total = sum(widths[c] for c in columns if not flexible[c])
+        flex_space = available - fixed_total
+        total_weight = sum(COL_SPECS.get(c, ColSpec(0, 8, 30, 1.0)).weight for c in flex_cols)
+        if total_weight <= 0:
+            break
+
+        all_settled = True
+        for col in flex_cols:
+            spec = COL_SPECS.get(col, ColSpec(0, 8, 30, 1.0))
+            raw = int(flex_space * spec.weight / total_weight)
+            if raw <= spec.min_width:
+                widths[col] = spec.min_width
+                flexible[col] = False
+                all_settled = False
+            elif raw >= spec.max_width:
+                widths[col] = spec.max_width
+                flexible[col] = False
+                all_settled = False
+            else:
+                widths[col] = raw
+        if all_settled:
+            break
+    else:
+        # Safety: should never trigger — each round fixes at least one column
+        assert False, f"bug: width allocation did not converge after {max_rounds} rounds"
+
+    return widths
 
 
 def _render_table(records: list[dict], columns: list[str]) -> None:
-    """Render records as a formatted table to stdout."""
-    # Compute column widths: max of header and data, clamped to configured limits
-    col_widths: dict[str, int] = {}
-    for col in columns:
-        min_w, max_w = _COL_WIDTHS.get(col, (8, 30))
-        data_w = max((len(record_get_col(r, col)) for r in records), default=0)
-        header_w = len(col.upper())
-        col_widths[col] = max(min(max(data_w, header_w), max_w), min_w)
+    """Render records as an adaptive table that fits the terminal width.
 
-    # Header
+    Phase 1: Select which columns fit (highest priority first).
+    Phase 2: Allocate widths proportionally with min/max clamping.
+    See docs/ADAPTIVE_TABLE.md for the algorithm.
+    """
+    terminal_width = shutil.get_terminal_size((80, 24)).columns
+    columns = select_columns(columns, terminal_width)
+    if not columns:
+        return
+    col_widths = allocate_widths(columns, terminal_width)
+
+    # Header (truncate names that exceed allocated width)
     hdr_parts = []
     sep_parts = []
     for col in columns:
         w = col_widths[col]
-        if col == "ago":
-            hdr_parts.append(f"{col.upper():>{w}}")
+        spec = COL_SPECS.get(col, ColSpec(0, 8, 30, 1.0))
+        name = col.upper()[:w]
+        if spec.right_align:
+            hdr_parts.append(f"{name:>{w}}")
             sep_parts.append(f"{'---':>{w}}")
         else:
-            hdr_parts.append(f"{col.upper():<{w}}")
-            sep_parts.append(f"{'-' * min(len(col), w):<{w}}")
-    print("  ".join(hdr_parts))
-    print("  ".join(sep_parts))
+            hdr_parts.append(f"{name:<{w}}")
+            sep_parts.append(f"{'-' * min(len(name), w):<{w}}")
+    print(SEPARATOR.join(hdr_parts))
+    print(SEPARATOR.join(sep_parts))
 
     # Rows
     for r in records:
         row_parts = []
         for col in columns:
             w = col_widths[col]
+            spec = COL_SPECS.get(col, ColSpec(0, 8, 30, 1.0))
             val = record_get_col(r, col)
             # Truncate
             if len(val) > w:
@@ -845,13 +931,13 @@ def _render_table(records: list[dict], columns: list[str]) -> None:
                     val = "..." + val[-(w - 3):]
                 else:
                     val = val[:w - 3] + "..."
-            if col == "ago":
+            if spec.right_align:
                 row_parts.append(f"{val:>{w}}")
             elif col == "session_id":
                 row_parts.append(f"{val[:w]:<{w}}")
             else:
                 row_parts.append(f"{val:<{w}}")
-        print("  ".join(row_parts))
+        print(SEPARATOR.join(row_parts))
 
 
 def _output_csv(records: list[dict], columns: list[str]) -> None:
@@ -1182,6 +1268,12 @@ def parse_args() -> argparse.Namespace:
         "-vv: +detail +10min moving averages, -vvv: trace (per-file, per-server).",
     )
     parser.add_argument(
+        "--include-archived",
+        action="store_true",
+        help="Also read archived sessions from archive/*.finished.jsonl.xz. "
+        "Useful with --waiting=all for historical queries.",
+    )
+    parser.add_argument(
         "--watch",
         nargs="?",
         const=2.0,
@@ -1194,31 +1286,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_log_files() -> list[Path]:
+def discover_log_files(include_archived: bool = False) -> list[Path]:
     """Find all log files in the default log directory.
 
     Matches both current (*.log) and rotated files (*.log.1, *.log.2, ...).
     Rotated files are sorted numerically (oldest first) so events are
     read in chronological order: *.log.10, *.log.9, ..., *.log.1, *.log
+
+    When include_archived is True, also includes compressed archive files
+    from archive/*.finished.jsonl.xz (sorted alphabetically, before active logs).
     """
     if not DEFAULT_LOG_DIR.is_dir():
         return []
+    archived: list[Path] = []
+    if include_archived:
+        archive_dir = DEFAULT_LOG_DIR / "archive"
+        if archive_dir.is_dir():
+            archived = sorted(archive_dir.glob("*.finished.jsonl.xz"))
     current = sorted(DEFAULT_LOG_DIR.glob("*.log"))
     rotated = sorted(
         DEFAULT_LOG_DIR.glob("*.log.[0-9]*"),
         key=lambda p: -int(p.suffix.lstrip(".")),  # .10 before .9 before .1
     )
-    return rotated + current  # oldest rotated first, current last
+    return archived + rotated + current  # archived first, then oldest rotated, current last
 
 
 def iter_lines(sources: list[Path] | None) -> Iterator[str]:
-    """Yield lines from files or stdin, one at a time (streaming)."""
+    """Yield lines from files or stdin, one at a time (streaming).
+
+    Transparently decompresses .xz files (used for archived sessions).
+    """
     if sources:
         for path in sources:
             t_file = time.monotonic()
             try:
-                with open(path) as f:
-                    yield from f
+                if path.name.endswith(".xz"):
+                    with lzma.open(path, "rt") as f:
+                        yield from f
+                else:
+                    with open(path) as f:
+                        yield from f
             except FileNotFoundError:
                 print(f"Warning: {path} not found, skipping.", file=sys.stderr)
             _timings[f"file:{path.name}"] = time.monotonic() - t_file
@@ -1250,7 +1357,8 @@ def resolve_sources(args: argparse.Namespace) -> list[Path] | None:
     """Determine input sources: explicit --file > auto-discovered logs > stdin."""
     if args.file:
         return [Path(f) for f in args.file]
-    discovered = discover_log_files()
+    include_archived = getattr(args, "include_archived", False)
+    discovered = discover_log_files(include_archived=include_archived)
     if discovered:
         return discovered
     if not sys.stdin.isatty():
