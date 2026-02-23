@@ -1484,13 +1484,12 @@ def main() -> None:
                 sys.stdout, sys.stderr = real_out, real_err
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             header = f"Every {interval}s: query-hooks.py {argv_str}    {now}\n\n"
-            # Atomic swap: clear screen + header + stderr + stdout in one write
-            real_err.write(f"\033[2J\033[H{header}{buf_err.getvalue()}")
+            # Double buffer: assemble entire frame, then clear+write in one
+            # syscall to prevent flicker (clear and content are never visible
+            # separately because they go through a single write to one fd).
+            frame = f"\033[2J\033[H{header}{buf_err.getvalue()}{buf_out.getvalue()}"
+            real_err.write(frame)
             real_err.flush()
-            out = buf_out.getvalue()
-            if out:
-                real_out.write(out)
-                real_out.flush()
             time.sleep(interval)
     except KeyboardInterrupt:
         print(file=sys.stderr)  # clean line after ^C
