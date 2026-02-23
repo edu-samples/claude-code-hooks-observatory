@@ -34,6 +34,60 @@ Check `session_id` field behavior across:
 * Session resume scenarios
 * Different projects
 
+### query-hooks.py Watch Mode Performance
+
+Profiling (`-vvv`) shows 0.5-0.9s per refresh at ~750ms average:
+
+```
+timing: parse=261ms  proc=66ms  tmux=410ms  correlate=2ms  state=12ms  render=1ms
+detail: 3578 lines, 43 sessions, 13 claude PIDs, 181 tmux panes
+```
+
+Two bottlenecks to address:
+
+**1. Tmux server queries (55% of frame time, ~410ms)**
+
+25 tmux servers queried sequentially via `tmux -L <name> list-panes`. Many are
+stale `popup-test-*` sockets from old tests. Ideas:
+
+* **Parallel subprocess pool** — query all servers concurrently instead of
+  sequentially. Spread queries across frames to avoid CPU spikes.
+* **Stale socket detection** — skip dead server sockets before querying (check
+  if the tmux server process is actually running).
+* **Differential refresh** — check IDLE/PROMPT/WAITING sessions less frequently
+  (e.g. every 5th frame) since their state changes rarely. Only RUN:* sessions
+  need every-frame updates.
+* **Cache between frames** — pane map changes rarely; reuse previous result and
+  only re-query every Nth cycle or on SIGWINCH.
+
+**2. Log parsing (35% of frame time, ~261ms)**
+
+3578 lines parsed with `json.loads()` per line on every refresh. Ideas:
+
+* **Seek offset caching** — remember file position from last frame, only parse
+  new lines appended since then. Reset on file rotation (detect via inode or
+  size shrink).
+* **Tail-only parsing** — for `--waiting` mode, only the last event per session
+  matters. Read file backwards (or from a cached offset) to find recent events
+  faster.
+* **In-memory session state** — maintain session dict across frames, only update
+  with new lines. Full re-parse only on startup or file rotation.
+
+### Session Liveness Accuracy
+
+`--waiting` mode marks some sessions as active (RUN:*) that are actually dead.
+Root causes to investigate:
+
+* Stale tmux server sockets from version-mismatched servers (upgraded tmux binary
+  but old servers still running) may return pane data that doesn't reflect reality.
+* CWD-based matching can mis-associate sessions when multiple sessions share a
+  working directory or when a new session inherits a directory from a dead one.
+* `/proc` cross-reference only checks if a `claude` process exists with a matching
+  CWD — it doesn't verify the process is the same session (PID reuse, multiple
+  sessions in same directory).
+
+Needs investigation with a clean tmux setup (single server version).
+
 ## Medium Priority
 
 ### Docker Container Tunneling
